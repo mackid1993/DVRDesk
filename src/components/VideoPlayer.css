@@ -299,29 +299,205 @@
   text-overflow: ellipsis;
 }
 
-/* ── Click shield + hover-revealed controls ───────────────────────────────
-   Clicking the picture used to hit Chromium's built-in click-to-play/pause,
-   which is far too easy to trigger by accident. The shield covers everything
-   above the native control bar and turns a click into "show the controls".
-   The bar itself is left uncovered so scrubbing and the transport buttons
-   still work normally. */
+/* ── Player control overlay ───────────────────────────────────────────────
+   Replaces the old row of buttons in the title bar and the browser's native
+   control chrome. Fades with the rest of the player when the pointer idles. */
 
-.video-click-shield {
+.video-controls {
   position: absolute;
   left: 0;
   right: 0;
-  top: 0;
-  bottom: 70px;
-  z-index: 2;
+  bottom: 0;
+  z-index: 3;
+  padding: 26px 14px 12px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.88) 0%, rgba(0, 0, 0, 0.62) 55%, rgba(0, 0, 0, 0) 100%);
+  transition: opacity 0.22s ease;
 }
 
-/* Native controls fade in with the rest of the player chrome on hover, and
-   fade out with it once the pointer goes idle. */
-.video-element::-webkit-media-controls-panel {
-  transition: opacity 0.18s ease;
-}
-
-.video-overlay--controls-hidden .video-element::-webkit-media-controls-panel {
+.video-overlay--controls-hidden .video-controls {
   opacity: 0;
   pointer-events: none;
+}
+
+.video-controls__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.video-controls__spacer {
+  flex: 1;
+}
+
+/* ── Scrub bar ────────────────────────────────────────────────────────── */
+
+.video-scrub {
+  position: relative;
+  height: 5px;
+  margin: 0 2px 12px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.video-scrub__fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  border-radius: 3px;
+  background: #60b0f0;
+  pointer-events: none;
+}
+
+.video-scrub__ad {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: #d4841a;
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.video-scrub__ad--disabled {
+  background: #6b6b6b;
+}
+
+/* Real range input on top: gives drag, click-to-seek and keyboard for free. */
+.video-scrub__input {
+  position: absolute;
+  inset: -6px 0;
+  width: 100%;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.video-scrub__input::-webkit-slider-thumb {
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  border: none;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+
+.video-scrub__input::-webkit-slider-runnable-track {
+  background: transparent;
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────────── */
+
+.video-ctl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 34px;
+  height: 32px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #f0f0f0;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.video-ctl:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.video-ctl--primary {
+  min-width: 40px;
+  background: rgba(255, 255, 255, 0.18);
+  font-size: 14px;
+}
+
+.video-ctl--primary:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.video-ctl--wide {
+  font-size: 12px;
+}
+
+.video-ctl--on {
+  background: var(--wc-accent);
+  color: #fff;
+}
+
+.video-ctl--on:hover {
+  background: var(--wc-accent-hover);
+}
+
+.video-ctl__glyph {
+  font-size: 15px;
+}
+
+.video-ctl__num {
+  font-size: 10px;
+  font-weight: 700;
+  opacity: 0.85;
+}
+
+/* ── Time / live badge ────────────────────────────────────────────────── */
+
+.video-time {
+  margin-left: 6px;
+  font-size: 12px;
+  color: #d8d8d8;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.video-live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--wc-error);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+}
+
+/* ── Volume ───────────────────────────────────────────────────────────── */
+
+.video-volume {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.video-volume__slider {
+  width: 0;
+  opacity: 0;
+  margin: 0;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.3);
+  cursor: pointer;
+  transition: width 0.18s ease, opacity 0.18s ease;
+}
+
+.video-volume:hover .video-volume__slider,
+.video-volume__slider:focus-visible {
+  width: 76px;
+  opacity: 1;
+}
+
+.video-volume__slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #fff;
+  border: none;
 }

@@ -124,6 +124,15 @@ function getBufferAhead(video: HTMLVideoElement): number {
   return 0;
 }
 
+function formatClock(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  const mm = h > 0 ? String(m).padStart(2, '0') : String(m);
+  return `${h > 0 ? `${h}:` : ''}${mm}:${String(s).padStart(2, '0')}`;
+}
+
 function collectNerdStats(video: HTMLVideoElement | null, hls: Hls | null, fallbackManifestUrl: string): NerdStats {
   const nowIso = new Date().toISOString();
   if (!video) {
@@ -238,6 +247,9 @@ export default function VideoPlayer() {
   // Drives the play/pause button's icon. Sourced from the element's own events
   // so it stays correct however playback was started or stopped.
   const [isPaused, setIsPaused] = useState(false);
+  // Native controls are gone, so volume has to be surfaced by the custom bar.
+  const [volume, setVolume] = useState(1);
+  const [muted, setMuted] = useState(false);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const captionModeRef = useRef<CaptionMode>('off');
   const hasAppliedResumeRef = useRef(false);
@@ -1232,6 +1244,8 @@ export default function VideoPlayer() {
 
   if (!nowPlayingId) return null;
 
+  const isLiveNow = !nowPlayingRecordingKind;
+
   return (
     <div
       className={`video-overlay${controlsVisible ? '' : ' video-overlay--controls-hidden'}`}
@@ -1241,93 +1255,10 @@ export default function VideoPlayer() {
     >
       <div className="video-header">
         <span className="video-title">{nowPlayingTitle}</span>
-        <div className="video-header__controls">
-          {(hasBroadcast || hasSrt) && (
-            <label className="video-cc-wrap" title="Caption track selection">
-              <span className="video-cc-label">CC</span>
-              <select
-                className="video-cc-select"
-                value={captionMode}
-                onChange={(e) => setCaptionModeAndApply(e.target.value as CaptionMode)}
-              >
-                <option value="off">Off</option>
-                {hasBroadcast && <option value="broadcast">Broadcast</option>}
-                {hasSrt && <option value="srt">Py-Captions (SRT)</option>}
-              </select>
-            </label>
-          )}
-          {adBlocks.length > 0 && (
-            <button
-              className={`video-skip-toggle ${skipAds ? 'video-skip-toggle--on' : ''}`}
-              onClick={() => setSkipAds((v) => !v)}
-              title={skipAds ? 'Commercial skipping ON — click to disable' : 'Commercial skipping OFF — click to enable'}
-            >
-              {skipAds ? '⏭ Skip Ads: On' : '⏭ Skip Ads: Off'}
-            </button>
-          )}
-          <button className="video-jump-btn" onClick={() => skipBy(-(skipIntervals?.skipBack ?? DEFAULT_SKIP_INTERVALS.skipBack))} title={`Back ${(skipIntervals?.skipBack ?? DEFAULT_SKIP_INTERVALS.skipBack)} seconds`}>
-            ↺ {skipIntervals?.skipBack ?? DEFAULT_SKIP_INTERVALS.skipBack}s
-          </button>
-          <button
-            className="video-jump-btn"
-            onClick={togglePlayPause}
-            title={isPaused ? 'Play' : 'Pause'}
-            aria-label={isPaused ? 'Play' : 'Pause'}
-          >
-            {isPaused ? '▶' : '⏸'}
-          </button>
-          <button className="video-jump-btn" onClick={() => skipBy(skipIntervals?.skipForward ?? DEFAULT_SKIP_INTERVALS.skipForward)} title={`Forward ${(skipIntervals?.skipForward ?? DEFAULT_SKIP_INTERVALS.skipForward)} seconds`}>
-            {skipIntervals?.skipForward ?? DEFAULT_SKIP_INTERVALS.skipForward}s ↻
-          </button>
-          {diagnosticsEnabled && (
-            <button
-              className={`video-report-btn ${showStats ? 'video-report-btn--active' : ''}`}
-              onClick={() => setShowStats((v) => !v)}
-              title="Toggle live playback stats overlay (Shift+S)"
-            >
-              {showStats ? 'Hide Stats' : 'Stats'}
-            </button>
-          )}
-          {diagnosticsEnabled && (
-            <button className="video-report-btn" onClick={copyPlaybackReport} title="Copy playback diagnostics report">
-              {reportCopied ? 'Copied' : 'Copy Report'}
-            </button>
-          )}
-          <button
-            className="video-jump-btn"
-            onClick={() => { void toggleOverlayFullscreen(); }}
-            title={isOverlayFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
-          >
-            {isOverlayFullscreen ? '⤢ Exit Fullscreen' : '⤢ Fullscreen'}
-          </button>
-          <button className="video-close" onClick={stopPlayback} aria-label="Close player">
-            ✕
-          </button>
-        </div>
+        <button className="video-close" onClick={stopPlayback} aria-label="Close player">
+          ✕
+        </button>
       </div>
-
-      {/* Commercial indicator bar */}
-      {adBlocks.length > 0 && duration > 0 && (
-        <div className="video-ad-bar" aria-label="Timeline with commercial markers">
-          {adBlocks.map(([start, end], i) => (
-            <div
-              key={i}
-              className={`video-ad-segment ${disabledBlocks.has(i) ? 'video-ad-segment--disabled' : ''}`}
-              style={{
-                left: `${(start / duration) * 100}%`,
-                width: `${Math.max(0.4, ((end - start) / duration) * 100)}%`,
-              }}
-              title={disabledBlocks.has(i)
-                ? `Commercial block ${i + 1} — auto-skip disabled (seeked manually)`
-                : `Commercial block ${i + 1}`}
-            />
-          ))}
-          <div
-            className="video-ad-bar__playhead"
-            style={{ left: `${(currentTime / duration) * 100}%` }}
-          />
-        </div>
-      )}
 
       {skipping && <div className="video-skip-toast">Skipping commercial…</div>}
       {remuxFallbackMsg && <div className="video-skip-toast">{remuxFallbackMsg}</div>}
@@ -1363,23 +1294,171 @@ export default function VideoPlayer() {
           clicked, which is not what a click on a TV picture should do. Cover
           everything above the control bar so a click reveals the controls
           instead of pausing; the bar itself stays directly clickable. */}
-      {!error ? (
-        <div
-          className="video-click-shield"
-          aria-hidden="true"
-          onClick={resetHideTimer}
-          onDoubleClick={() => { void toggleOverlayFullscreen(); }}
-        />
-      ) : null}
       <video
         ref={videoRef}
         className="video-element"
         style={error ? { visibility: 'hidden' } : undefined}
-        controls
         onEnded={stopPlayback}
         onPlay={() => setIsPaused(false)}
         onPause={() => setIsPaused(true)}
+        onVolumeChange={(e) => {
+          setVolume(e.currentTarget.volume);
+          setMuted(e.currentTarget.muted);
+        }}
+        onClick={resetHideTimer}
+        onDoubleClick={() => { void toggleOverlayFullscreen(); }}
       />
+
+      {!error && (
+        <div className="video-controls" onMouseMove={resetHideTimer}>
+          {/* Live has no meaningful scrub range; recordings get a seek bar
+              with the commercial blocks marked behind it. */}
+          {!isLiveNow && duration > 0 && (
+            <div className="video-scrub">
+              {adBlocks.map(([start, end], i) => (
+                <div
+                  key={i}
+                  className={`video-scrub__ad ${disabledBlocks.has(i) ? 'video-scrub__ad--disabled' : ''}`}
+                  style={{
+                    left: `${(start / duration) * 100}%`,
+                    width: `${Math.max(0.4, ((end - start) / duration) * 100)}%`,
+                  }}
+                  title={disabledBlocks.has(i)
+                    ? `Commercial block ${i + 1} — auto-skip disabled (seeked manually)`
+                    : `Commercial block ${i + 1}`}
+                />
+              ))}
+              <div className="video-scrub__fill" style={{ width: `${(currentTime / duration) * 100}%` }} />
+              <input
+                className="video-scrub__input"
+                type="range"
+                min={0}
+                max={duration}
+                step={0.1}
+                value={Math.min(currentTime, duration)}
+                aria-label="Seek"
+                onChange={(e) => {
+                  const v = videoRef.current;
+                  if (v) v.currentTime = Number(e.target.value);
+                }}
+              />
+            </div>
+          )}
+
+          <div className="video-controls__row">
+            <button
+              className="video-ctl video-ctl--primary"
+              onClick={togglePlayPause}
+              title={isPaused ? 'Play' : 'Pause'}
+              aria-label={isPaused ? 'Play' : 'Pause'}
+            >
+              {isPaused ? '▶' : '❚❚'}
+            </button>
+            <button
+              className="video-ctl"
+              onClick={() => skipBy(-(skipIntervals?.skipBack ?? DEFAULT_SKIP_INTERVALS.skipBack))}
+              title={`Back ${skipIntervals?.skipBack ?? DEFAULT_SKIP_INTERVALS.skipBack} seconds`}
+            >
+              <span className="video-ctl__glyph">↺</span>
+              <span className="video-ctl__num">{skipIntervals?.skipBack ?? DEFAULT_SKIP_INTERVALS.skipBack}</span>
+            </button>
+            <button
+              className="video-ctl"
+              onClick={() => skipBy(skipIntervals?.skipForward ?? DEFAULT_SKIP_INTERVALS.skipForward)}
+              title={`Forward ${skipIntervals?.skipForward ?? DEFAULT_SKIP_INTERVALS.skipForward} seconds`}
+            >
+              <span className="video-ctl__glyph">↻</span>
+              <span className="video-ctl__num">{skipIntervals?.skipForward ?? DEFAULT_SKIP_INTERVALS.skipForward}</span>
+            </button>
+
+            <span className="video-time">
+              {isLiveNow
+                ? <span className="video-live-badge">● LIVE</span>
+                : `${formatClock(currentTime)} / ${formatClock(duration)}`}
+            </span>
+
+            <span className="video-controls__spacer" />
+
+            <div className="video-volume">
+              <button
+                className="video-ctl"
+                onClick={() => {
+                  const v = videoRef.current;
+                  if (v) v.muted = !v.muted;
+                }}
+                title={muted || volume === 0 ? 'Unmute' : 'Mute'}
+                aria-label={muted || volume === 0 ? 'Unmute' : 'Mute'}
+              >
+                {muted || volume === 0 ? '🔇' : volume < 0.5 ? '🔉' : '🔊'}
+              </button>
+              <input
+                className="video-volume__slider"
+                type="range"
+                min={0}
+                max={1}
+                step={0.01}
+                value={muted ? 0 : volume}
+                aria-label="Volume"
+                onChange={(e) => {
+                  const v = videoRef.current;
+                  if (!v) return;
+                  v.volume = Number(e.target.value);
+                  v.muted = Number(e.target.value) === 0;
+                }}
+              />
+            </div>
+
+            {(hasBroadcast || hasSrt) && (
+              <label className="video-cc-wrap" title="Caption track selection">
+                <span className="video-cc-label">CC</span>
+                <select
+                  className="video-cc-select"
+                  value={captionMode}
+                  onChange={(e) => setCaptionModeAndApply(e.target.value as CaptionMode)}
+                >
+                  <option value="off">Off</option>
+                  {hasBroadcast && <option value="broadcast">Broadcast</option>}
+                  {hasSrt && <option value="srt">Py-Captions (SRT)</option>}
+                </select>
+              </label>
+            )}
+
+            {adBlocks.length > 0 && (
+              <button
+                className={`video-ctl video-ctl--wide ${skipAds ? 'video-ctl--on' : ''}`}
+                onClick={() => setSkipAds((v) => !v)}
+                title={skipAds ? 'Commercial skipping ON — click to disable' : 'Commercial skipping OFF — click to enable'}
+              >
+                ⏭ Ads
+              </button>
+            )}
+
+            {diagnosticsEnabled && (
+              <button
+                className={`video-ctl video-ctl--wide ${showStats ? 'video-ctl--on' : ''}`}
+                onClick={() => setShowStats((v) => !v)}
+                title="Toggle live playback stats overlay (Shift+S)"
+              >
+                Stats
+              </button>
+            )}
+            {diagnosticsEnabled && (
+              <button className="video-ctl video-ctl--wide" onClick={copyPlaybackReport} title="Copy playback diagnostics report">
+                {reportCopied ? 'Copied' : 'Report'}
+              </button>
+            )}
+
+            <button
+              className="video-ctl"
+              onClick={() => { void toggleOverlayFullscreen(); }}
+              title={isOverlayFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+              aria-label={isOverlayFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+            >
+              {isOverlayFullscreen ? '⤡' : '⤢'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

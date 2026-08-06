@@ -35,7 +35,7 @@ export const DEFAULT_KEYBINDINGS = {
 
 export const DEFAULT_SKIP_INTERVALS = {
   skipForward: 30,
-  skipBack: 10,
+  skipBack: 15,
   fastForward: 60,
   fastReverse: 60,
 };
