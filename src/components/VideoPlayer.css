@@ -298,3 +298,30 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ── Click shield + hover-revealed controls ───────────────────────────────
+   Clicking the picture used to hit Chromium's built-in click-to-play/pause,
+   which is far too easy to trigger by accident. The shield covers everything
+   above the native control bar and turns a click into "show the controls".
+   The bar itself is left uncovered so scrubbing and the transport buttons
+   still work normally. */
+
+.video-click-shield {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 70px;
+  z-index: 2;
+}
+
+/* Native controls fade in with the rest of the player chrome on hover, and
+   fade out with it once the pointer goes idle. */
+.video-element::-webkit-media-controls-panel {
+  transition: opacity 0.18s ease;
+}
+
+.video-overlay--controls-hidden .video-element::-webkit-media-controls-panel {
+  opacity: 0;
+  pointer-events: none;
+}
