@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchChannels } from '../api/recordings';
 import request, { getServerUrl } from '../api/client';
 import type { Channel } from '../api/types';
@@ -68,7 +68,18 @@ const TEXT = new Intl.Collator(undefined, { sensitivity: 'base' });
 const INITIAL_VISIBLE_CHANNEL_ROWS = 120;
 const VISIBLE_CHANNEL_ROWS_STEP = 80;
 const LIVE_SORT_STATE_KEY = 'winchannels_live_sort_state_v1';
+const FAVORITE_COLLECTIONS_KEY = 'winchannels_favorite_collections_v1';
 const GUIDE_SLOT_SECONDS = 30 * 60;
+
+function loadFavoriteCollections(): string[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(FAVORITE_COLLECTIONS_KEY) ?? '') as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((s) => String(s)).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
 
 interface LiveViewState {
   sortMode: SortMode;
@@ -366,6 +377,12 @@ export default function Live() {
   const [guideHidden, setGuideHidden] = useState<Set<string>>(new Set(cached?.guideHidden ?? []));
   const [guideLogoMap, setGuideLogoMap] = useState<Record<string, string>>(cached?.guideLogoMap ?? {});
   const [collections, setCollections] = useState<ChannelCollection[]>(cached?.collections ?? []);
+  const [favoriteCollections, setFavoriteCollections] = useState<Set<string>>(
+    () => new Set(loadFavoriteCollections())
+  );
+  // Applying the favorite as the opening filter must happen once collections
+  // have loaded, but must not fight the user if they then pick something else.
+  const appliedFavoriteRef = useRef(false);
   const [sortMode, setSortMode] = useState<SortMode>(initialSortState.sortMode);
   const [diagnosticsSortMode, setDiagnosticsSortMode] = useState<DiagnosticsSortMode>(initialSortState.diagnosticsSortMode);
   const [guideStart, setGuideStart] = useState<number>(() => alignToSlot(Date.now() / 1000));
@@ -645,16 +662,46 @@ export default function Live() {
     return out;
   }, [rows, diagnosticsSortMode]);
 
+  const toggleFavoriteCollection = useCallback((slug: string) => {
+    setFavoriteCollections((current) => {
+      const next = new Set(current);
+      if (next.has(slug)) next.delete(slug);
+      else next.add(slug);
+      localStorage.setItem(FAVORITE_COLLECTIONS_KEY, JSON.stringify(Array.from(next)));
+      return next;
+    });
+  }, []);
+
   const availableFilters = useMemo(() => {
     const base: FilterMode[] = ['all', 'favorites'];
-    for (const collection of collections) {
+    // Favorited collections lead, so the lineups you actually watch sit next to
+    // the All/Favorites chips instead of behind every other collection.
+    const ordered = [...collections].sort((a, b) => {
+      const aFav = favoriteCollections.has(a.slug) ? 0 : 1;
+      const bFav = favoriteCollections.has(b.slug) ? 0 : 1;
+      if (aFav !== bFav) return aFav - bFav;
+      return TEXT.compare(a.name, b.name);
+    });
+    for (const collection of ordered) {
       base.push(`collection:${collection.slug}`);
     }
     for (const sourceFilter of sourceFilters) {
       base.push(`source:${sourceFilter}`);
     }
     return base;
-  }, [sourceFilters, collections]);
+  }, [sourceFilters, collections, favoriteCollections]);
+
+  // Open on the favorited collection once, if it still exists on the server.
+  useEffect(() => {
+    if (appliedFavoriteRef.current || collections.length === 0) return;
+    appliedFavoriteRef.current = true;
+    const favorite = collections.find((c) => favoriteCollections.has(c.slug));
+    if (favorite) setFilterMode(`collection:${favorite.slug}`);
+  }, [collections, favoriteCollections]);
+
+  useEffect(() => {
+    appliedFavoriteRef.current = false;
+  }, [cacheKey, serverChangeVersion]);
 
   useEffect(() => {
     if (!availableFilters.includes(filterMode)) {
@@ -759,16 +806,51 @@ export default function Live() {
       <header className="page__header">
         <h1 className="page__title" style={{ whiteSpace: 'nowrap', alignSelf: 'flex-start' }}>Live TV</h1>
         <div className="page__filters page__filters--wrap">
-          {availableFilters.map((filter) => (
-            <button
-              key={filter}
-              type="button"
-              className={`filter-btn ${filterMode === filter ? 'filter-btn--active' : ''}`}
-              onClick={() => setFilterMode(filter)}
-            >
-              {channelFilterLabel(filter, collectionNames)}
-            </button>
-          ))}
+          {availableFilters.map((filter) => {
+            const label = channelFilterLabel(filter, collectionNames);
+            const isActive = filterMode === filter;
+
+            if (!filter.startsWith('collection:')) {
+              return (
+                <button
+                  key={filter}
+                  type="button"
+                  className={`filter-btn ${isActive ? 'filter-btn--active' : ''}`}
+                  onClick={() => setFilterMode(filter)}
+                >
+                  {label}
+                </button>
+              );
+            }
+
+            // Collections get a star. The star is a sibling button rather than
+            // nested inside the filter button — a button inside a button is
+            // invalid and swallows the click.
+            const slug = filter.replace('collection:', '');
+            const isFavorite = favoriteCollections.has(slug);
+            return (
+              <span key={filter} className={`filter-chip ${isActive ? 'filter-chip--active' : ''}`}>
+                <button
+                  type="button"
+                  className={`filter-btn filter-btn--chip ${isActive ? 'filter-btn--active' : ''}`}
+                  onClick={() => setFilterMode(filter)}
+                >
+                  {label}
+                </button>
+                <button
+                  type="button"
+                  className={`filter-star ${isFavorite ? 'filter-star--on' : ''}`}
+                  onClick={() => toggleFavoriteCollection(slug)}
+                  aria-pressed={isFavorite}
+                  title={isFavorite
+                    ? `Unfavorite ${label} — it will no longer open by default`
+                    : `Favorite ${label} — pin it first and open Live on it`}
+                >
+                  {isFavorite ? '★' : '☆'}
+                </button>
+              </span>
+            );
+          })}
           <select
             className="page-sort-select"
             value={sortMode}
