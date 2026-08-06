@@ -536,6 +536,12 @@ export default function VideoPlayer() {
     if (Hls.isSupported()) {
       let cancelled = false;
       let stallCheckIntervalId: ReturnType<typeof setInterval> | null = null;
+      // Buffer-stall escalation state: recoverMediaError() discards the whole
+      // buffer, so it is a last resort rather than a per-event reaction.
+      let stallEventStreak = 0;
+      let lastStallEventMs = 0;
+      let lastStallProgressTime = 0;
+      let lastMediaRecoverMs = 0;
       let liveRecoveryIntervalId: ReturnType<typeof setInterval> | null = null;
       let liveRecoveryTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
@@ -592,20 +598,45 @@ export default function VideoPlayer() {
             (extras.length ? `  [${extras.join('  ')}]` : ''),
           );
 
-          // For non-fatal fragment parsing errors, call recoverMediaError() to
-          // clear any confused decoder state quickly rather than waiting for
-          // the buffer stall cycle that typically follows a bad segment.
-          // bufferSeekOverHole/bufferStalledError show up on live channels
-          // while the DVR's remux pipeline is still ramping up: hls.js's
-          // built-in nudge can get stuck retrying past the same hole, leaving
-          // the player frozen on one frame with audio still advancing.
+          // A fragment that failed to parse leaves genuinely confused decoder
+          // state, so clear it immediately rather than waiting for the buffer
+          // stall cycle that follows a bad segment.
+          if (!data.fatal && data.details === 'fragParsingError') {
+            hls.recoverMediaError();
+            return;
+          }
+
+          // bufferSeekOverHole and bufferStalledError are routine: hls.js emits
+          // them whenever it nudges over a small gap or the buffer briefly
+          // underruns, which is what maxBufferHole/nudgeMaxRetry above are for,
+          // and at least one fires on a normal cold start while the DVR's
+          // encoder ramps up. recoverMediaError() swaps the MediaSource and
+          // discards the buffer that was just built, so calling it on every
+          // occurrence turns a nudge hls.js would have absorbed into a visible
+          // hitch — intermittent, because it depends on whether the event
+          // happens to fire. Let hls.js handle them, and only escalate when
+          // they keep arriving without playback making progress.
           if (
             !data.fatal &&
-            (data.details === 'fragParsingError' ||
-              data.details === 'bufferSeekOverHole' ||
-              data.details === 'bufferStalledError')
+            (data.details === 'bufferSeekOverHole' || data.details === 'bufferStalledError')
           ) {
-            hls.recoverMediaError();
+            const nowMs = Date.now();
+            const vidNow = videoRef.current;
+            const progressed = vidNow !== null && vidNow.currentTime > lastStallProgressTime + 0.25;
+            if (progressed) {
+              lastStallProgressTime = vidNow.currentTime;
+              stallEventStreak = 0;
+            }
+            if (nowMs - lastStallEventMs > 15000) stallEventStreak = 0;
+            lastStallEventMs = nowMs;
+            stallEventStreak += 1;
+
+            if (stallEventStreak >= 4 && nowMs - lastMediaRecoverMs > 15000) {
+              console.debug(`[HLS] escalating to recoverMediaError after ${stallEventStreak} stalls without progress`);
+              stallEventStreak = 0;
+              lastMediaRecoverMs = nowMs;
+              hls.recoverMediaError();
+            }
             return;
           }
 
