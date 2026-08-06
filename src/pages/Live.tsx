@@ -332,6 +332,11 @@ async function resolveLiveManifestUrl(channel: Channel): Promise<string> {
           Accept: 'application/vnd.apple.mpegurl,application/x-mpegURL,text/plain,*/*',
         },
       });
+      // Channels DVR answers HEAD on live manifests with 404 even where GET
+      // returns 200, so a 404/405 means "HEAD is unusable here", not "wrong
+      // URL". Probing the remaining candidates can only fail the same way and
+      // ends at candidates[0] regardless, so stop paying for it.
+      if (res.status === 404 || res.status === 405) return candidates[0];
       if (!res.ok) continue;
       const ct = (res.headers.get('content-type') || '').toLowerCase();
       // Accept any response that looks like an HLS stream or a plausible media type.

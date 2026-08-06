@@ -695,6 +695,19 @@ export default function VideoPlayer() {
             // and self-heal automatically instead of requiring that manual step.
             if (isLive && !hasAutoRecoveredRef.current) {
               const recoveryStartMs = Date.now();
+              // Track forward progress rather than absolute position. The old
+              // test was `elapsedMs > 4000 && currentTime < 0.5`, which is a
+              // wall-clock check against a fixed position: it fired ~4s into
+              // every tune while the stream was still legitimately starting
+              // (confirmed by this same logging reporting frozen=true with
+              // decoded=0, i.e. not one frame had arrived). Recovery does a full
+              // stop+reopen, so a false positive shows up as the picture
+              // freezing, the guide flashing, and playback coming back paused.
+              let lastTime = -1;
+              let lastAdvanceMs = Date.now();
+              let lastDecoded = 0;
+              let lastDropped = 0;
+
               liveRecoveryIntervalId = setInterval(() => {
                 if (cancelled) { clearInterval(liveRecoveryIntervalId!); liveRecoveryIntervalId = null; return; }
                 const vid = videoRef.current;
@@ -703,15 +716,38 @@ export default function VideoPlayer() {
                 const quality = typeof vid.getVideoPlaybackQuality === 'function' ? vid.getVideoPlaybackQuality() : null;
                 const dropped = quality?.droppedVideoFrames ?? 0;
                 const decoded = quality?.totalVideoFrames ?? 0;
-                const droppedPct = decoded > 20 ? (dropped / decoded) * 100 : 0;
-                // Deliberately NOT gated on !vid.paused: the most common cold-start
-                // failure is the element sitting genuinely paused (play() blocked)
-                // rather than playing-but-stuck, and this should self-heal either way.
-                const frozen = elapsedMs > 4000 && vid.currentTime < 0.5;
-                const choppy = decoded > 20 && droppedPct > 15;
+
+                // Media has genuinely arrived once frames decode or the element
+                // reports data. Before that we are waiting on the DVR to tune
+                // its source and start an encoder (~8-11s on an ah4c/M3U
+                // source), which is not a fault.
+                const hasMedia = decoded > 0 || vid.readyState >= 2;
+                if (vid.currentTime > lastTime + 0.01) {
+                  lastTime = vid.currentTime;
+                  lastAdvanceMs = Date.now();
+                }
+                const stalledMs = Date.now() - lastAdvanceMs;
+
+                // Deliberately NOT gated on !vid.paused: a stream sitting
+                // genuinely paused (play() blocked) must still self-heal.
+                // 8s of no forward progress is well clear of the ~2s segments
+                // this server produces, so normal rebuffering does not trip it.
+                const frozen = hasMedia ? stalledMs > 8000 : elapsedMs > 45000;
+
+                // Judge choppiness on a recent window, not cumulatively from
+                // startup. Cold-start artifacts drop a handful of frames, and
+                // against the old `decoded > 20` threshold that alone exceeded
+                // 15% and forced a teardown.
+                const windowDecoded = decoded - lastDecoded;
+                const windowDropped = dropped - lastDropped;
+                const droppedPct = windowDecoded > 0 ? (windowDropped / windowDecoded) * 100 : 0;
+                const choppy = decoded > 600 && windowDecoded > 120 && droppedPct > 25;
+                if (windowDecoded > 120) { lastDecoded = decoded; lastDropped = dropped; }
+
                 console.debug(
                   `[Live self-heal] t=${elapsedMs}ms currentTime=${vid.currentTime.toFixed(2)} paused=${vid.paused} ` +
-                  `decoded=${decoded} dropped=${dropped} droppedPct=${droppedPct.toFixed(1)} frozen=${frozen} choppy=${choppy}`
+                  `stalledMs=${stalledMs} decoded=${decoded} dropped=${dropped} droppedPct=${droppedPct.toFixed(1)} ` +
+                  `frozen=${frozen} choppy=${choppy}`
                 );
 
                 if (frozen || choppy) {
