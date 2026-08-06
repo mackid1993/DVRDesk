@@ -235,6 +235,9 @@ export default function VideoPlayer() {
   const [lastMutationFailure, setLastMutationFailure] = useState<string>('n/a');
   const [isOverlayFullscreen, setIsOverlayFullscreen] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
+  // Drives the play/pause button's icon. Sourced from the element's own events
+  // so it stays correct however playback was started or stopped.
+  const [isPaused, setIsPaused] = useState(false);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const captionModeRef = useRef<CaptionMode>('off');
   const hasAppliedResumeRef = useRef(false);
@@ -574,6 +577,28 @@ export default function VideoPlayer() {
           nudgeMaxRetry: 5,
           abrBandWidthFactor: 0.98,
           abrBandWidthUpFactor: 0.5,
+          // Live streams have no maximum latency by default, so hls.js plays on
+          // at 1x from wherever the playhead lands. Every stall therefore costs
+          // that much latency permanently: measured 4.1s behind the live edge
+          // before a 15s stall and 18s behind afterwards, still 18s behind 30s
+          // later with playbackRate stuck at 1. Cap it so playback returns to
+          // the edge - hls.js catches small drifts up by playing slightly fast,
+          // and seeks forward once latency exceeds the cap. liveSyncDuration is
+          // deliberately left alone: the healthy steady state already sits ~2.2s
+          // back, which is one segment, and pushing the target further from the
+          // edge only makes the stall worse.
+          // liveSyncDurationCount is restated at its default of 3 on purpose:
+          // hls.js validates liveMaxLatencyDurationCount against the value
+          // present in the config object passed in, not against the resolved
+          // default, and throws "must be greater than liveSyncDurationCount"
+          // if it is absent — which would break live playback outright.
+          ...(isLive
+            ? {
+                liveSyncDurationCount: 3,
+                liveMaxLatencyDurationCount: 6,
+                maxLiveSyncPlaybackRate: 1.2,
+              }
+            : {}),
           // Extract CEA-608/708 closed captions embedded in TS segments and
           // expose them as native video text tracks (selectable via the
           // browser's built-in CC button in the video controls bar).
@@ -1243,6 +1268,14 @@ export default function VideoPlayer() {
           <button className="video-jump-btn" onClick={() => skipBy(-(skipIntervals?.skipBack ?? DEFAULT_SKIP_INTERVALS.skipBack))} title={`Back ${(skipIntervals?.skipBack ?? DEFAULT_SKIP_INTERVALS.skipBack)} seconds`}>
             ↺ {skipIntervals?.skipBack ?? DEFAULT_SKIP_INTERVALS.skipBack}s
           </button>
+          <button
+            className="video-jump-btn"
+            onClick={togglePlayPause}
+            title={isPaused ? 'Play' : 'Pause'}
+            aria-label={isPaused ? 'Play' : 'Pause'}
+          >
+            {isPaused ? '▶' : '⏸'}
+          </button>
           <button className="video-jump-btn" onClick={() => skipBy(skipIntervals?.skipForward ?? DEFAULT_SKIP_INTERVALS.skipForward)} title={`Forward ${(skipIntervals?.skipForward ?? DEFAULT_SKIP_INTERVALS.skipForward)} seconds`}>
             {skipIntervals?.skipForward ?? DEFAULT_SKIP_INTERVALS.skipForward}s ↻
           </button>
@@ -1326,12 +1359,26 @@ export default function VideoPlayer() {
           <button className="video-error__close" onClick={stopPlayback}>Close</button>
         </div>
       ) : null}
+      {/* Chromium's media controls toggle play/pause when the video body is
+          clicked, which is not what a click on a TV picture should do. Cover
+          everything above the control bar so a click reveals the controls
+          instead of pausing; the bar itself stays directly clickable. */}
+      {!error ? (
+        <div
+          className="video-click-shield"
+          aria-hidden="true"
+          onClick={resetHideTimer}
+          onDoubleClick={() => { void toggleOverlayFullscreen(); }}
+        />
+      ) : null}
       <video
         ref={videoRef}
         className="video-element"
         style={error ? { visibility: 'hidden' } : undefined}
         controls
         onEnded={stopPlayback}
+        onPlay={() => setIsPaused(false)}
+        onPause={() => setIsPaused(true)}
       />
     </div>
   );
