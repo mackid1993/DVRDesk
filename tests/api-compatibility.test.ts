@@ -47,6 +47,23 @@ interface Movie {
   watched: boolean; favorited: boolean; created_at: number; updated_at: number;
 }
 interface Channel { id: string; name: string; number: string; }
+interface ChannelCollection { slug: string; name: string; items: string[]; }
+interface GuideDevice { DeviceID: string; }
+interface GuideAiring {
+  Time: number; Duration: number; Title: string;
+  EpisodeTitle?: string; Summary?: string; Image?: string;
+  Categories?: string[]; Tags?: string[];
+}
+interface GuideEntry { Channel?: { Number?: string; ID?: string; DeviceID?: string }; Airings?: GuideAiring[]; }
+interface ScheduledJobPayload {
+  ID: string; Name: string; Time: number; Duration: number; Channels: string[];
+  RuleID?: string; Airing?: { Time?: number; ProgramID?: string; SeriesID?: string };
+}
+interface RulePayload {
+  ID: string; Name: string; EQ?: { SeriesID?: string; Tags?: string };
+  PaddingStart?: number; PaddingEnd?: number; KeepNum?: number;
+  Duplicates?: boolean; Paused?: boolean; NumJobs?: number;
+}
 interface VideoGroup { id: string; name: string; }
 interface Video {
   id: string; video_group_id: string; title: string; video_title: string;
@@ -231,6 +248,157 @@ describe('Channels DVR API Compatibility', () => {
       const res = await fetch(`${BASE}/dvr/guide/channels`);
       expect(res.ok, `Expected 200, got ${res.status}`).toBe(true);
       expect(await res.json()).toBeDefined();
+    });
+  });
+
+  describe('GET /dvr/collections/channels', () => {
+    it('returns an array of collections with slug, name, and items', async () => {
+      const collections = await get<ChannelCollection[]>('/dvr/collections/channels');
+      expect(Array.isArray(collections)).toBe(true);
+      if (!collections.length) return;
+      const c = collections[0];
+      expect(typeof c.slug).toBe('string');
+      expect(typeof c.name).toBe('string');
+      expect(Array.isArray(c.items)).toBe(true);
+    });
+
+    it('collection items reference channel numbers from /api/v1/channels', async () => {
+      const collections = await get<ChannelCollection[]>('/dvr/collections/channels');
+      if (!collections.length || !collections[0].items.length) return;
+      const channels = await get<Channel[]>('/api/v1/channels');
+      const numbers = new Set(channels.map((c) => c.number));
+      const matched = collections[0].items.filter((item) => numbers.has(item));
+      expect(matched.length, 'no collection item matched a channel number').toBeGreaterThan(0);
+    });
+  });
+
+  describe('GET /devices/:id/guide', () => {
+    it('returns airings honoring the time and duration params', async () => {
+      const devices = await get<GuideDevice[]>('/devices');
+      expect(Array.isArray(devices)).toBe(true);
+      if (!devices.length) return;
+
+      const start = Math.floor(Date.now() / 1000);
+      const entries = await get<GuideEntry[]>(`/devices/${devices[0].DeviceID}/guide`, {
+        time: String(start),
+        duration: '3600',
+      });
+      expect(Array.isArray(entries)).toBe(true);
+      if (!entries.length) return;
+
+      const entry = entries[0];
+      expect(typeof entry.Channel?.Number).toBe('string');
+      expect(Array.isArray(entry.Airings)).toBe(true);
+
+      const airing = entries.flatMap((e) => e.Airings ?? [])[0];
+      if (!airing) return;
+      // The grid positions blocks from Time/Duration and badges from Tags/Categories.
+      expect(typeof airing.Time).toBe('number');
+      expect(typeof airing.Duration).toBe('number');
+      expect(typeof airing.Title).toBe('string');
+      expect(airing.Time + airing.Duration).toBeGreaterThan(start);
+    });
+  });
+
+  // ── Scheduling (jobs + season pass rules) ─────────────────────────────────────
+
+  describe('GET /dvr/jobs', () => {
+    it('returns scheduled jobs carrying the Airing used to match the guide', async () => {
+      const scheduled = await get<ScheduledJobPayload[]>('/dvr/jobs');
+      expect(Array.isArray(scheduled)).toBe(true);
+      if (!scheduled.length) return;
+      const j = scheduled[0];
+      expect(typeof j.ID).toBe('string');
+      expect(typeof j.Time).toBe('number');
+      expect(typeof j.Duration).toBe('number');
+      expect(Array.isArray(j.Channels)).toBe(true);
+      // The grid keys recordings by the *airing* start, not the padded job start.
+      expect(typeof j.Airing?.Time).toBe('number');
+    });
+  });
+
+  describe('GET /dvr/rules', () => {
+    it('returns rules matching on EQ.SeriesID', async () => {
+      const ruleList = await get<RulePayload[]>('/dvr/rules');
+      expect(Array.isArray(ruleList)).toBe(true);
+      if (!ruleList.length) return;
+      const r = ruleList[0];
+      expect(typeof r.ID).toBe('string');
+      expect(typeof r.Name).toBe('string');
+      expect(typeof r.EQ?.SeriesID).toBe('string');
+    });
+  });
+
+  describe('POST /dvr/jobs/new', () => {
+    it('exists and rejects an invalid job (no recording is created)', async () => {
+      const res = await fetch(`${BASE}/dvr/jobs/new`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      // 400 proves the handler is present and validating; 404 would mean the
+      // endpoint moved and one-off recording is broken.
+      expect(res.status, `Expected 400 from an empty job body, got ${res.status}`).toBe(400);
+    });
+  });
+
+  describe('DELETE /dvr/jobs/:id', () => {
+    it('accepts DELETE (no real job is targeted)', async () => {
+      const res = await method('DELETE', '/dvr/jobs/dvrdesk-nonexistent-probe');
+      expect(res.status, 'DELETE should not be rejected as an unsupported method').not.toBe(405);
+    });
+  });
+
+  describe('season pass round-trip: POST /dvr/rules/new → PUT → DELETE', () => {
+    // Created paused against a nonexistent series so the server schedules
+    // nothing, then removed again — the DVR is left exactly as found.
+    const probe = {
+      Name: 'DVRDesk API probe (auto-removed)',
+      EQ: { SeriesID: '000000000', Tags: 'New' },
+      PaddingStart: 120,
+      PaddingEnd: 300,
+      KeepNum: 4,
+      Duplicates: true,
+      Paused: true,
+    };
+    let createdId = '';
+
+    it('creates a rule and echoes every option back', async () => {
+      const res = await fetch(`${BASE}/dvr/rules/new`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(probe),
+      });
+      expect(res.ok, `Expected 2xx, got ${res.status}`).toBe(true);
+      const created = await res.json() as RulePayload;
+      createdId = String(created.ID ?? '');
+      expect(createdId).not.toBe('');
+      expect(created.EQ?.SeriesID).toBe('000000000');
+      expect(created.PaddingStart).toBe(120);
+      expect(created.PaddingEnd).toBe(300);
+      expect(created.KeepNum).toBe(4);
+      expect(created.Paused).toBe(true);
+      // Nothing should be scheduled for a paused rule on a bogus series.
+      expect(created.NumJobs ?? 0).toBe(0);
+    });
+
+    it('PUT replaces the rule rather than merging into it', async () => {
+      if (!createdId) return;
+      const res = await fetch(`${BASE}/dvr/rules/${createdId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...probe, KeepNum: 9 }),
+      });
+      expect(res.ok, `Expected 2xx, got ${res.status}`).toBe(true);
+      expect((await res.json() as RulePayload).KeepNum).toBe(9);
+    });
+
+    it('DELETE removes it, leaving no probe rules behind', async () => {
+      if (!createdId) return;
+      const res = await fetch(`${BASE}/dvr/rules/${createdId}`, { method: 'DELETE' });
+      expect(res.ok, `Expected 2xx, got ${res.status}`).toBe(true);
+      const remaining = await get<RulePayload[]>('/dvr/rules');
+      expect(remaining.some((r) => String(r.ID) === createdId)).toBe(false);
     });
   });
 

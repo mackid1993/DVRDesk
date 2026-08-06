@@ -1,0 +1,304 @@
+/* ── Guide grid (EPG) ─────────────────────────────────────────────────────
+   Two-axis scroller: channels down, time across. The channel column and the
+   time ruler stay pinned via position: sticky inside the same scroll box. */
+
+.guide {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--wc-border);
+  border-radius: 8px;
+  background: var(--wc-bg-surface-2);
+}
+
+.guide__inner {
+  width: max-content;
+  min-width: 100%;
+}
+
+/* ── Time ruler ───────────────────────────────────────────────────────── */
+
+.guide__timeline {
+  display: flex;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--wc-bg-sidebar);
+  border-bottom: 1px solid var(--wc-border);
+}
+
+.guide__corner {
+  position: sticky;
+  left: 0;
+  z-index: 4;
+  flex: 0 0 220px;
+  width: 220px;
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--wc-text-muted);
+  background: var(--wc-bg-sidebar);
+  border-right: 1px solid var(--wc-border);
+  display: flex;
+  align-items: center;
+}
+
+.guide__slots {
+  position: relative;
+  height: 32px;
+  flex: 0 0 auto;
+}
+
+.guide__slot {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  padding-left: 8px;
+  font-size: 11px;
+  color: var(--wc-text-secondary);
+  border-left: 1px solid var(--wc-border);
+  box-sizing: border-box;
+  white-space: nowrap;
+}
+
+.guide__now-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--wc-error);
+  z-index: 1;
+}
+
+/* ── Rows ─────────────────────────────────────────────────────────────── */
+
+.guide__rows {
+  position: relative;
+}
+
+.guide__row {
+  display: flex;
+  height: 56px;
+  border-bottom: 1px solid var(--wc-border);
+}
+
+.guide__row--active .guide__channel {
+  background: var(--wc-bg-active);
+  color: var(--wc-text-active);
+}
+
+.guide__channel {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  flex: 0 0 220px;
+  width: 220px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  text-align: left;
+  background: var(--wc-bg-surface);
+  border: none;
+  border-right: 1px solid var(--wc-border);
+  color: var(--wc-text-secondary);
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.guide__channel:hover {
+  background: var(--wc-bg-hover);
+  color: var(--wc-text);
+}
+
+.guide__channel-logo {
+  width: 40px;
+  height: 28px;
+  object-fit: contain;
+  flex: 0 0 auto;
+}
+
+.guide__channel-icon {
+  width: 40px;
+  text-align: center;
+  flex: 0 0 auto;
+}
+
+.guide__channel-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.guide__channel-number {
+  font-size: 11px;
+  color: var(--wc-text-muted);
+}
+
+.guide__channel-name {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.guide__channel-pending {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--wc-text-active);
+}
+
+.guide__track {
+  position: relative;
+  flex: 0 0 auto;
+  height: 100%;
+}
+
+.guide__now-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--wc-error);
+  opacity: 0.55;
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* ── Program blocks ───────────────────────────────────────────────────── */
+
+.guide__program {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  overflow: hidden;
+  padding: 4px 8px;
+  text-align: left;
+  background: var(--wc-bg-surface);
+  border: 1px solid var(--wc-border);
+  border-radius: 5px;
+  color: var(--wc-text-secondary);
+  cursor: pointer;
+  box-sizing: border-box;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.guide__program:hover {
+  background: var(--wc-bg-hover);
+  border-color: var(--wc-accent);
+  color: var(--wc-text);
+  z-index: 2;
+}
+
+.guide__program--now {
+  background: var(--wc-bg-active);
+  border-color: var(--wc-accent);
+  color: var(--wc-text-active);
+}
+
+.guide__program--now:hover {
+  background: var(--wc-bg-active-hover);
+}
+
+.guide__program--movie {
+  border-left: 3px solid var(--wc-warn);
+}
+
+.guide__program--sports {
+  border-left: 3px solid var(--wc-ok);
+}
+
+.guide__program-title {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.guide__program-sub {
+  font-size: 11px;
+  color: var(--wc-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.guide__badge {
+  display: inline-block;
+  margin-right: 5px;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  vertical-align: middle;
+}
+
+.guide__badge--new {
+  background: var(--wc-ok);
+  color: #06210a;
+}
+
+.guide__badge--live {
+  background: var(--wc-error);
+  color: #2a0a0a;
+}
+
+/* Scheduled-to-record indicator. A season pass gets a hollow dot so a
+   one-off recording stays visually distinct from a rule-driven one. */
+.guide__program--scheduled {
+  border-color: var(--wc-error);
+}
+
+.guide__rec {
+  margin-right: 5px;
+  font-size: 10px;
+  vertical-align: middle;
+  color: var(--wc-error);
+}
+
+.guide__rec--series {
+  opacity: 0.7;
+}
+
+.guide__empty {
+  position: absolute;
+  inset: 3px 0;
+  display: flex;
+  align-items: center;
+  padding-left: 10px;
+  font-size: 11px;
+  color: var(--wc-text-faint);
+}
+
+.guide__status {
+  position: sticky;
+  left: 0;
+  width: 100%;
+  margin: 0;
+  padding: 12px;
+  font-size: 12px;
+  color: var(--wc-text-muted);
+  box-sizing: border-box;
+}
+
+/* ── Toolbar (rendered by the Live page) ──────────────────────────────── */
+
+.guide-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.guide-nav__label {
+  font-size: 12px;
+  color: var(--wc-text-secondary);
+  min-width: 190px;
+}

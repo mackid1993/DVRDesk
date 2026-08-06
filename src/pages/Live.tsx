@@ -1,14 +1,35 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchChannels } from '../api/recordings';
 import request, { getServerUrl } from '../api/client';
 import type { Channel } from '../api/types';
+import type { Airing, ChannelCollection, GuideData } from '../api/guide';
+import { GUIDE_WINDOW_SECONDS, fetchChannelCollections, fetchGuide } from '../api/guide';
+import type {
+  RecordOptions,
+  ScheduleState,
+  ScheduledJob,
+  SeriesPassOptions,
+  SeriesRule,
+} from '../api/scheduling';
+import {
+  EMPTY_SCHEDULE,
+  airingScheduleKey,
+  cancelJob,
+  cancelSeries,
+  fetchSchedule,
+  recordAiring,
+  recordSeries,
+  updateSeriesRule,
+} from '../api/scheduling';
+import GuideGrid from '../components/GuideGrid';
+import ProgramDialog from '../components/ProgramDialog';
 import { useStore } from '../store/useStore';
 import { applyLogoFallback, buildGuideLogoMap, channelLogoUrl, logoForChannelKey } from '../lib/channelLogos';
 import './Page.css';
 
 type SortMode = 'alpha' | 'number';
 type DiagnosticsSortMode = 'number' | 'name';
-type FilterMode = 'all' | 'favorites' | `source:${string}`;
+type FilterMode = 'all' | 'favorites' | `source:${string}` | `collection:${string}`;
 type ChannelRow = {
   id: string;
   channel: Channel;
@@ -38,6 +59,7 @@ interface LiveCacheEntry {
   guideFavorites: string[];
   guideHidden: string[];
   guideLogoMap: Record<string, string>;
+  collections: ChannelCollection[];
 }
 
 const liveCache = new Map<string, LiveCacheEntry>();
@@ -46,12 +68,16 @@ const TEXT = new Intl.Collator(undefined, { sensitivity: 'base' });
 const INITIAL_VISIBLE_CHANNEL_ROWS = 120;
 const VISIBLE_CHANNEL_ROWS_STEP = 80;
 const LIVE_SORT_STATE_KEY = 'winchannels_live_sort_state_v1';
+const GUIDE_SLOT_SECONDS = 30 * 60;
 
-function loadLiveSortState(): { sortMode: SortMode; diagnosticsSortMode: DiagnosticsSortMode } {
+interface LiveViewState {
+  sortMode: SortMode;
+  diagnosticsSortMode: DiagnosticsSortMode;
+}
+
+function loadLiveSortState(): LiveViewState {
   try {
-    const raw = localStorage.getItem(LIVE_SORT_STATE_KEY);
-    if (!raw) return { sortMode: 'number', diagnosticsSortMode: 'number' };
-    const parsed = JSON.parse(raw) as Partial<{ sortMode: SortMode; diagnosticsSortMode: DiagnosticsSortMode }>;
+    const parsed = JSON.parse(localStorage.getItem(LIVE_SORT_STATE_KEY) ?? '') as Partial<LiveViewState>;
     return {
       sortMode: parsed.sortMode === 'alpha' || parsed.sortMode === 'number' ? parsed.sortMode : 'number',
       diagnosticsSortMode: parsed.diagnosticsSortMode === 'name' || parsed.diagnosticsSortMode === 'number'
@@ -61,6 +87,19 @@ function loadLiveSortState(): { sortMode: SortMode; diagnosticsSortMode: Diagnos
   } catch {
     return { sortMode: 'number', diagnosticsSortMode: 'number' };
   }
+}
+
+/** Round down to the enclosing half-hour so guide columns land on :00 / :30. */
+function alignToSlot(unixSeconds: number): number {
+  return Math.floor(unixSeconds / GUIDE_SLOT_SECONDS) * GUIDE_SLOT_SECONDS;
+}
+
+function formatGuideWindow(start: number, end: number): string {
+  const startDate = new Date(start * 1000);
+  const endDate = new Date(end * 1000);
+  const day = startDate.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  const time = (d: Date) => d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  return `${day} · ${time(startDate)} – ${time(endDate)}`;
 }
 
 function channelNumberValue(numberText: string | undefined): number {
@@ -85,11 +124,19 @@ function channelCollectionName(channel: Channel): string {
   ).trim();
 }
 
-function channelFilterLabel(filter: FilterMode): string {
+function channelFilterLabel(filter: FilterMode, collectionNames?: Map<string, string>): string {
   if (filter === 'all') return 'All Channels';
   if (filter === 'favorites') return 'Favorites';
   if (filter.startsWith('source:')) return filter.replace('source:', '');
-  return filter.replace('collection:', '');
+  const slug = filter.replace('collection:', '');
+  return collectionNames?.get(slug) ?? slug;
+}
+
+/** Collection membership is stored as channel numbers, which also match ids. */
+function collectionMemberKeys(channel: Channel): string[] {
+  return [channel.number, channel.id]
+    .filter((v): v is string => Boolean(v && String(v).trim()))
+    .map((v) => String(v).trim().toLowerCase());
 }
 
 function favoriteKeyForChannel(channel: Channel): string[] {
@@ -313,8 +360,17 @@ export default function Live() {
   const [guideFavorites, setGuideFavorites] = useState<Set<string>>(new Set(cached?.guideFavorites ?? []));
   const [guideHidden, setGuideHidden] = useState<Set<string>>(new Set(cached?.guideHidden ?? []));
   const [guideLogoMap, setGuideLogoMap] = useState<Record<string, string>>(cached?.guideLogoMap ?? {});
+  const [collections, setCollections] = useState<ChannelCollection[]>(cached?.collections ?? []);
   const [sortMode, setSortMode] = useState<SortMode>(initialSortState.sortMode);
   const [diagnosticsSortMode, setDiagnosticsSortMode] = useState<DiagnosticsSortMode>(initialSortState.diagnosticsSortMode);
+  const [guideStart, setGuideStart] = useState<number>(() => alignToSlot(Date.now() / 1000));
+  const [guideData, setGuideData] = useState<GuideData | null>(null);
+  const [guideLoading, setGuideLoading] = useState(false);
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  const [schedule, setSchedule] = useState<ScheduleState>(EMPTY_SCHEDULE);
+  const [openProgram, setOpenProgram] = useState<{ row: ChannelRow; airing: Airing } | null>(null);
+  const [scheduleBusy, setScheduleBusy] = useState<string | null>(null);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
   const [filterMode, setFilterMode] = useState<FilterMode>('all');
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
@@ -322,7 +378,6 @@ export default function Live() {
   const [visibleChannelCount, setVisibleChannelCount] = useState(INITIAL_VISIBLE_CHANNEL_ROWS);
   const [loading, setLoading] = useState(!cached);
   const [error, setError] = useState<string | null>(null);
-  const liveListRef = useRef<HTMLUListElement | null>(null);
   const serverChangeVersion = useStore((s) => s.serverChangeVersion);
   const playItem = useStore((s) => s.playItem);
   const diagnosticsEnabled = useStore((s) => s.diagnosticsEnabled);
@@ -331,6 +386,12 @@ export default function Live() {
   useEffect(() => {
     localStorage.setItem(LIVE_SORT_STATE_KEY, JSON.stringify({ sortMode, diagnosticsSortMode }));
   }, [sortMode, diagnosticsSortMode]);
+
+  // Keep the "on now" highlight and the red time marker honest.
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 30_000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -343,13 +404,15 @@ export default function Live() {
       setGuideFavorites(new Set(cachedRows.guideFavorites));
       setGuideHidden(new Set(cachedRows.guideHidden));
       setGuideLogoMap(cachedRows.guideLogoMap);
+      setCollections(cachedRows.collections);
     }
 
     Promise.all([
       fetchChannels(),
       request<Record<string, unknown>>('/dvr/guide/channels').catch(() => ({})),
+      fetchChannelCollections(),
     ])
-      .then(([loadedChannels, loadedGuide]) => {
+      .then(([loadedChannels, loadedGuide, loadedCollections]) => {
         if (cancelled) return;
         const nextFavorites = Array.from(parseGuideFavorites(loadedGuide));
         const nextHidden = Array.from(parseGuideHidden(loadedGuide));
@@ -359,11 +422,13 @@ export default function Live() {
           guideFavorites: nextFavorites,
           guideHidden: nextHidden,
           guideLogoMap: nextGuideLogoMap,
+          collections: loadedCollections,
         });
         setChannels(loadedChannels);
         setGuideFavorites(new Set(nextFavorites));
         setGuideHidden(new Set(nextHidden));
         setGuideLogoMap(nextGuideLogoMap);
+        setCollections(loadedCollections);
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
@@ -372,6 +437,82 @@ export default function Live() {
       cancelled = true;
     };
   }, [cacheKey, serverChangeVersion]);
+
+  const deviceIds = useMemo(() => {
+    return Array.from(new Set(channels.map((c) => (c.source_id || '').trim()).filter(Boolean)));
+  }, [channels]);
+
+  useEffect(() => {
+    if (deviceIds.length === 0) return;
+    let cancelled = false;
+    setGuideLoading(true);
+    fetchGuide(deviceIds, guideStart, GUIDE_WINDOW_SECONDS)
+      .then((data) => {
+        if (!cancelled) setGuideData(data);
+      })
+      .catch(() => {
+        if (!cancelled) setGuideData(null);
+      })
+      .finally(() => {
+        if (!cancelled) setGuideLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [deviceIds, guideStart]);
+
+  // What is already scheduled, so the grid can flag it and the dialog can offer
+  // "cancel" instead of "record". Refreshed after every scheduling action.
+  const refreshSchedule = useCallback(() => {
+    return fetchSchedule()
+      .then(setSchedule)
+      .catch(() => setSchedule(EMPTY_SCHEDULE));
+  }, []);
+
+  useEffect(() => {
+    void refreshSchedule();
+  }, [serverChangeVersion, cacheKey, refreshSchedule]);
+
+  const scheduleStateFor = useCallback(
+    (airing: Airing): 'job' | 'series' | null => {
+      if (schedule.jobsByAiring.has(airingScheduleKey(airing.channelNumber, airing.start))) {
+        return 'job';
+      }
+      if (airing.seriesId && schedule.ruleBySeries.has(airing.seriesId)) return 'series';
+      return null;
+    },
+    [schedule]
+  );
+
+  /** Wrap a scheduling call with busy/error state and a schedule refresh. */
+  const runScheduleAction = useCallback(
+    async (key: string, action: () => Promise<unknown>) => {
+      setScheduleBusy(key);
+      setScheduleError(null);
+      try {
+        await action();
+        await refreshSchedule();
+      } catch (e) {
+        setScheduleError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setScheduleBusy(null);
+      }
+    },
+    [refreshSchedule]
+  );
+
+  const collectionNames = useMemo(() => {
+    return new Map(collections.map((c) => [c.slug, c.name]));
+  }, [collections]);
+
+  const collectionMembers = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const collection of collections) {
+      map.set(collection.slug, new Set(collection.items.map((i) => i.toLowerCase())));
+    }
+    return map;
+  }, [collections]);
 
   const rows = useMemo<ChannelRow[]>(() => {
     const seen = new Map<string, number>();
@@ -501,11 +642,14 @@ export default function Live() {
 
   const availableFilters = useMemo(() => {
     const base: FilterMode[] = ['all', 'favorites'];
+    for (const collection of collections) {
+      base.push(`collection:${collection.slug}`);
+    }
     for (const sourceFilter of sourceFilters) {
       base.push(`source:${sourceFilter}`);
     }
     return base;
-  }, [sourceFilters]);
+  }, [sourceFilters, collections]);
 
   useEffect(() => {
     if (!availableFilters.includes(filterMode)) {
@@ -523,9 +667,14 @@ export default function Live() {
     } else if (filterMode.startsWith('source:')) {
       const wanted = filterMode.replace('source:', '');
       list = list.filter((row) => row.sourceFilterLabel === wanted);
+    } else if (filterMode.startsWith('collection:')) {
+      const members = collectionMembers.get(filterMode.replace('collection:', ''));
+      list = members
+        ? list.filter((row) => collectionMemberKeys(row.channel).some((key) => members.has(key)))
+        : [];
     }
 
-    if (filterMode === 'all' || filterMode === 'favorites') {
+    if (filterMode === 'all' || filterMode === 'favorites' || filterMode.startsWith('collection:')) {
       list = dedupeRows(list);
     }
 
@@ -540,29 +689,11 @@ export default function Live() {
       });
     }
     return sorted;
-  }, [rows, filterMode, sortMode, guideFavorites]);
+  }, [rows, filterMode, sortMode, guideFavorites, collectionMembers]);
 
   useEffect(() => {
     setVisibleChannelCount(INITIAL_VISIBLE_CHANNEL_ROWS);
   }, [filterMode, sortMode, visibleRows.length]);
-
-  useEffect(() => {
-    const node = liveListRef.current;
-    if (!node) return;
-
-    const handleScroll = () => {
-      const remaining = node.scrollHeight - node.scrollTop - node.clientHeight;
-      if (remaining > 220) return;
-      setVisibleChannelCount((current) => {
-        if (current >= visibleRows.length) return current;
-        return Math.min(current + VISIBLE_CHANNEL_ROWS_STEP, visibleRows.length);
-      });
-    };
-
-    handleScroll();
-    node.addEventListener('scroll', handleScroll);
-    return () => node.removeEventListener('scroll', handleScroll);
-  }, [visibleRows.length, visibleChannelCount]);
 
   useEffect(() => {
     if (!selectedChannelId) return;
@@ -584,6 +715,40 @@ export default function Live() {
     }
   }, [visibleRows, selectedChannelId]);
 
+  const resolveRowLogo = useCallback(
+    (channel: Channel): string | undefined => {
+      return (
+        logoForChannelKey(channel.number, guideLogoMap)
+        ?? logoForChannelKey(channel.id, guideLogoMap)
+        ?? channelLogoUrl(channel)
+        ?? undefined
+      );
+    },
+    [guideLogoMap]
+  );
+
+  const playChannelRow = useCallback(
+    async (row: ChannelRow) => {
+      setSelectedChannelId(row.id);
+      setPlayPendingRowId(row.id);
+      const manifestUrl = await resolveLiveManifestUrl(row.channel);
+      const source = row.sourceName || 'Unknown Source';
+      const label = `${row.channel.number} ${row.channel.name} · ${source}`;
+      playItem(row.channel.id || row.id, label, '', [], manifestUrl);
+      setPlayPendingRowId(null);
+    },
+    [playItem]
+  );
+
+  const loadMoreRows = useCallback(() => {
+    setVisibleChannelCount((current) => {
+      if (current >= visibleRows.length) return current;
+      return Math.min(current + VISIBLE_CHANNEL_ROWS_STEP, visibleRows.length);
+    });
+  }, [visibleRows.length]);
+
+  const guideEnd = guideStart + GUIDE_WINDOW_SECONDS;
+
   return (
     <div className="page">
       <header className="page__header">
@@ -596,7 +761,7 @@ export default function Live() {
               className={`filter-btn ${filterMode === filter ? 'filter-btn--active' : ''}`}
               onClick={() => setFilterMode(filter)}
             >
-              {channelFilterLabel(filter)}
+              {channelFilterLabel(filter, collectionNames)}
             </button>
           ))}
           <select
@@ -621,67 +786,105 @@ export default function Live() {
         </div>
       </header>
       <p className="page__status live-count">
-        {visibleRows.length} channel{visibleRows.length === 1 ? '' : 's'} • {channelFilterLabel(filterMode)}
+        {visibleRows.length} channel{visibleRows.length === 1 ? '' : 's'} • {channelFilterLabel(filterMode, collectionNames)}
+        <span className="guide-nav">
+          <button
+            type="button"
+            className="filter-btn"
+            onClick={() => setGuideStart((s) => s - GUIDE_SLOT_SECONDS)}
+            aria-label="Earlier"
+          >
+            ◀
+          </button>
+          <button
+            type="button"
+            className="filter-btn"
+            onClick={() => setGuideStart(alignToSlot(Date.now() / 1000))}
+          >
+            Now
+          </button>
+          <button
+            type="button"
+            className="filter-btn"
+            onClick={() => setGuideStart((s) => s + GUIDE_SLOT_SECONDS)}
+            aria-label="Later"
+          >
+            ▶
+          </button>
+          <span className="guide-nav__label">{formatGuideWindow(guideStart, guideEnd)}</span>
+        </span>
       </p>
 
       {loading && <p className="page__status">Loading channels…</p>}
       {error && <p className="page__error">⚠ {error}</p>}
 
       {!loading && !error && (
-        <ul className="show-list__items live-list" ref={liveListRef}>
-          {displayedRows.map((row) => (
-            <li key={row.id}>
-              <button
-                type="button"
-                className={`show-item ${selectedChannelId === row.id ? 'show-item--active' : ''}`}
-                title={row.channel.name}
-                onClick={async () => {
-                  setSelectedChannelId(row.id);
-                  setPlayPendingRowId(row.id);
-                  const manifestUrl = await resolveLiveManifestUrl(row.channel);
-                  const source = row.sourceName || 'Unknown Source';
-                  const label = `${row.channel.number} ${row.channel.name} · ${source}`;
-                  playItem(row.channel.id || row.id, label, '', [], manifestUrl);
-                  setPlayPendingRowId(null);
-                }}
-                aria-pressed={selectedChannelId === row.id}
-              >
-                {(() => {
-                  const url = logoForChannelKey(row.channel.number, guideLogoMap)
-                    ?? logoForChannelKey(row.channel.id, guideLogoMap)
-                    ?? channelLogoUrl(row.channel);
-                  return url ? (
-                    <img
-                      className="show-item__thumb"
-                      src={url}
-                      alt=""
-                      aria-hidden="true"
-                      onError={(e) => applyLogoFallback(e.currentTarget)}
-                    />
-                  ) : (
-                    <span className="show-item__icon" aria-hidden="true">📺</span>
-                  );
-                })()}
-                <span className="live-item__text">
-                  <span className="show-item__name">
-                    {row.channel.number} {row.channel.name}
-                    {playPendingRowId === row.id ? ' • opening…' : ''}
-                  </span>
-                </span>
-              </button>
-            </li>
-          ))}
-          {visibleRows.length === 0 && (
-            <li>
-              <p className="page__status">No channels for the selected filter.</p>
-            </li>
-          )}
-          {displayedRows.length < visibleRows.length && (
-            <li>
-              <p className="page__status">Scroll for more channels…</p>
-            </li>
-          )}
-        </ul>
+        <GuideGrid
+          rows={displayedRows}
+          guide={guideData}
+          windowStart={guideStart}
+          windowEnd={guideEnd}
+          now={now}
+          loading={guideLoading}
+          selectedRowId={selectedChannelId}
+          pendingRowId={playPendingRowId}
+          resolveLogo={resolveRowLogo}
+          scheduleStateFor={scheduleStateFor}
+          onSelect={(row) => setSelectedChannelId(row.id)}
+          onPlay={(row) => { void playChannelRow(row as ChannelRow); }}
+          onOpenProgram={(row, airing) => {
+            setScheduleError(null);
+            setOpenProgram({ row: row as ChannelRow, airing });
+          }}
+          onLoadMore={loadMoreRows}
+          hasMore={displayedRows.length < visibleRows.length}
+        />
+      )}
+
+      {openProgram && (
+        <ProgramDialog
+          airing={openProgram.airing}
+          channel={openProgram.row.channel}
+          sourceName={openProgram.row.sourceName}
+          job={
+            schedule.jobsByAiring.get(
+              airingScheduleKey(openProgram.airing.channelNumber, openProgram.airing.start)
+            ) ?? null
+          }
+          rule={schedule.ruleBySeries.get(openProgram.airing.seriesId) ?? null}
+          defaultPadding={schedule.padding}
+          busy={scheduleBusy}
+          error={scheduleError}
+          onClose={() => setOpenProgram(null)}
+          onWatch={() => {
+            const row = openProgram.row;
+            setOpenProgram(null);
+            void playChannelRow(row);
+          }}
+          onRecord={(options: RecordOptions) => {
+            const airing = openProgram.airing;
+            const existing = schedule.jobsByAiring.get(
+              airingScheduleKey(airing.channelNumber, airing.start)
+            );
+            void runScheduleAction('record', async () => {
+              // Jobs have no update endpoint — re-book to change the times.
+              if (existing) await cancelJob(existing.id);
+              await recordAiring(airing, options);
+            });
+          }}
+          onCancelRecord={(job: ScheduledJob) => {
+            void runScheduleAction('cancel-job', () => cancelJob(job.id));
+          }}
+          onRecordSeries={(options: SeriesPassOptions) => {
+            void runScheduleAction('record-series', () => recordSeries(openProgram.airing, options));
+          }}
+          onUpdateSeries={(rule: SeriesRule, options: SeriesPassOptions) => {
+            void runScheduleAction('update-series', () => updateSeriesRule(rule, options));
+          }}
+          onCancelSeries={(rule: SeriesRule) => {
+            void runScheduleAction('cancel-series', () => cancelSeries(rule.id));
+          }}
+        />
       )}
 
       {diagnosticsEnabled && diagnosticsOpen && (

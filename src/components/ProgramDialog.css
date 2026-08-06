@@ -1,0 +1,238 @@
+/* ── Program detail / record dialog ───────────────────────────────────── */
+
+.progdlg {
+  max-width: 620px;
+  width: 100%;
+}
+
+.progdlg__body {
+  padding: 4px 16px 16px;
+  overflow-y: auto;
+}
+
+.progdlg__overview {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.progdlg__image {
+  width: 150px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex: 0 0 auto;
+  align-self: flex-start;
+}
+
+.progdlg__meta {
+  min-width: 0;
+  flex: 1;
+}
+
+.progdlg__episode {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--wc-text-heading);
+}
+
+.progdlg__when {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--wc-text-secondary);
+}
+
+.progdlg__badges {
+  margin: 0 0 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.progdlg__badge {
+  padding: 1px 6px;
+  border: 1px solid var(--wc-border);
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--wc-text-muted);
+}
+
+.progdlg__badge--new {
+  background: var(--wc-ok);
+  border-color: var(--wc-ok);
+  color: #06210a;
+}
+
+.progdlg__badge--live {
+  background: var(--wc-error);
+  border-color: var(--wc-error);
+  color: #2a0a0a;
+}
+
+.progdlg__summary {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--wc-text);
+}
+
+/* ── Sections ─────────────────────────────────────────────────────────── */
+
+.progdlg__section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--wc-border);
+}
+
+.progdlg__section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--wc-text-heading);
+}
+
+.progdlg__scheduled-tag {
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--wc-bg-active);
+  color: var(--wc-text-active);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.progdlg__fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+
+.progdlg__field {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--wc-text-secondary);
+}
+
+.progdlg__field-input {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.progdlg__field-input input {
+  width: 62px;
+  padding: 4px 7px;
+  background: var(--wc-bg-input);
+  border: 1px solid var(--wc-border-subtle);
+  border-radius: 6px;
+  color: var(--wc-text);
+  font-size: 12px;
+}
+
+.progdlg__field-input input:focus {
+  outline: none;
+  border-color: var(--wc-accent);
+}
+
+.progdlg__field-unit {
+  font-size: 11px;
+  color: var(--wc-text-muted);
+}
+
+.progdlg__check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--wc-text-secondary);
+  cursor: pointer;
+}
+
+.progdlg__computed {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--wc-text-secondary);
+}
+
+.progdlg__computed strong {
+  color: var(--wc-text-active);
+}
+
+.progdlg__note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--wc-text-muted);
+}
+
+.progdlg__error {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--wc-border-danger);
+  border-radius: 6px;
+  background: var(--wc-bg-danger);
+  color: var(--wc-text-danger);
+  font-size: 12px;
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────────── */
+
+.progdlg__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.progdlg__actions--footer {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--wc-border);
+}
+
+.progdlg__btn {
+  padding: 7px 14px;
+  border: 1px solid var(--wc-border-subtle);
+  border-radius: 8px;
+  background: var(--wc-bg-btn-secondary);
+  color: var(--wc-text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.progdlg__btn:hover:not(:disabled) {
+  background: var(--wc-bg-btn-secondary-hover);
+}
+
+.progdlg__btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.progdlg__btn--primary {
+  background: var(--wc-accent);
+  border-color: var(--wc-accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.progdlg__btn--primary:hover:not(:disabled) {
+  background: var(--wc-accent-hover);
+}
+
+.progdlg__btn--danger {
+  background: var(--wc-bg-danger);
+  border-color: var(--wc-border-danger);
+  color: var(--wc-text-danger);
+}
+
+.progdlg__btn--danger:hover:not(:disabled) {
+  background: var(--wc-bg-danger-hover);
+  color: var(--wc-text-danger-hover);
+}
