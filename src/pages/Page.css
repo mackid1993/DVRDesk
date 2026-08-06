@@ -1627,38 +1627,27 @@
   word-break: break-word;
 }
 
+/* ── Collection dropdown with favorite star ───────────────────────────────
+   The star sits beside the collection menu rather than on each chip, so the
+   filter bar stays two compact menus instead of one long row of pills. */
 
-/* ── Collection filter chip with favorite star ────────────────────────────
-   The star is a sibling of the filter button, not nested inside it, so the
-   two stay independently clickable; the wrapper makes them read as one pill. */
-
-.filter-chip {
+.filter-select-group {
   display: inline-flex;
   align-items: stretch;
-  border: 1px solid var(--wc-border-subtle);
-  border-radius: 20px;
+  border-radius: 8px;
   overflow: hidden;
-  background: var(--wc-bg-surface);
+  border: 1px solid var(--wc-border-subtle);
 }
 
-.filter-chip:hover {
-  border-color: var(--wc-border);
-}
-
-.filter-chip--active {
-  border-color: var(--wc-accent);
-}
-
-.filter-btn--chip {
+.filter-select-group .page-sort-select {
   border: none;
   border-radius: 0;
-  padding-right: 8px;
 }
 
 .filter-star {
   border: none;
   border-left: 1px solid var(--wc-border-subtle);
-  background: transparent;
+  background: var(--wc-bg-surface);
   color: var(--wc-text-faint);
   padding: 0 9px;
   font-size: 12px;
@@ -1667,9 +1656,14 @@
   transition: color 0.12s, background 0.12s;
 }
 
-.filter-star:hover {
+.filter-star:hover:not(:disabled) {
   background: var(--wc-bg-hover);
   color: var(--wc-text);
+}
+
+.filter-star:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .filter-star--on {

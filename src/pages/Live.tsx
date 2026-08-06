@@ -29,7 +29,19 @@ import './Page.css';
 
 type SortMode = 'alpha' | 'number';
 type DiagnosticsSortMode = 'number' | 'name';
-type FilterMode = 'all' | 'favorites' | `source:${string}` | `collection:${string}`;
+type FilterMode = 'all' | 'favorites' | `source:${string}` | `collection:${string}` | `stock:${string}`;
+
+/**
+ * Channels DVR exposes no built-in collections over the API — only the ones a
+ * user defines — so the familiar stock groupings are derived here from channel
+ * attributes. HD is the only attribute the server actually populates
+ * (Categories/Genres/Tags come back empty on every channel), so that is what
+ * these are built from.
+ */
+const STOCK_COLLECTIONS: { id: `stock:${string}`; name: string; match: (c: Channel) => boolean }[] = [
+  { id: 'stock:hd', name: 'HD Channels', match: (c) => c.hd === true },
+  { id: 'stock:sd', name: 'SD Channels', match: (c) => c.hd !== true },
+];
 type ChannelRow = {
   id: string;
   channel: Channel;
@@ -68,7 +80,9 @@ const TEXT = new Intl.Collator(undefined, { sensitivity: 'base' });
 const INITIAL_VISIBLE_CHANNEL_ROWS = 120;
 const VISIBLE_CHANNEL_ROWS_STEP = 80;
 const LIVE_SORT_STATE_KEY = 'winchannels_live_sort_state_v1';
-const FAVORITE_COLLECTIONS_KEY = 'winchannels_favorite_collections_v1';
+// Stores whole filter values ('collection:71', 'stock:hd') rather than bare
+// slugs, so stock and server-defined collections can both be favorited.
+const FAVORITE_COLLECTIONS_KEY = 'winchannels_favorite_collections_v2';
 const GUIDE_SLOT_SECONDS = 30 * 60;
 
 function loadFavoriteCollections(): string[] {
@@ -139,6 +153,9 @@ function channelFilterLabel(filter: FilterMode, collectionNames?: Map<string, st
   if (filter === 'all') return 'All Channels';
   if (filter === 'favorites') return 'Favorites';
   if (filter.startsWith('source:')) return filter.replace('source:', '');
+  if (filter.startsWith('stock:')) {
+    return STOCK_COLLECTIONS.find((s) => s.id === filter)?.name ?? filter.replace('stock:', '');
+  }
   const slug = filter.replace('collection:', '');
   return collectionNames?.get(slug) ?? slug;
 }
@@ -662,42 +679,50 @@ export default function Live() {
     return out;
   }, [rows, diagnosticsSortMode]);
 
-  const toggleFavoriteCollection = useCallback((slug: string) => {
+  const toggleFavoriteCollection = useCallback((value: string) => {
     setFavoriteCollections((current) => {
       const next = new Set(current);
-      if (next.has(slug)) next.delete(slug);
-      else next.add(slug);
+      if (next.has(value)) next.delete(value);
+      else next.add(value);
       localStorage.setItem(FAVORITE_COLLECTIONS_KEY, JSON.stringify(Array.from(next)));
       return next;
     });
   }, []);
 
+  // Channel count per collection, shown in the menu. A collection can resolve
+  // to zero when it references a source that is no longer in the lineup (e.g.
+  // Plex/Pluto ids from a disabled provider), and a bare name gives no hint
+  // that this is the reason the guide came back empty.
+  const collectionCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const stock of STOCK_COLLECTIONS) {
+      counts.set(stock.id, dedupeRows(rows.filter((row) => stock.match(row.channel))).length);
+    }
+    for (const collection of collections) {
+      const members = collectionMembers.get(collection.slug);
+      const matched = members
+        ? rows.filter((row) => collectionMemberKeys(row.channel).some((key) => members.has(key)))
+        : [];
+      counts.set(`collection:${collection.slug}`, dedupeRows(matched).length);
+    }
+    return counts;
+  }, [rows, collections, collectionMembers]);
+
   const availableFilters = useMemo(() => {
     const base: FilterMode[] = ['all', 'favorites'];
-    // Favorited collections lead, so the lineups you actually watch sit next to
-    // the All/Favorites chips instead of behind every other collection.
-    const ordered = [...collections].sort((a, b) => {
-      const aFav = favoriteCollections.has(a.slug) ? 0 : 1;
-      const bFav = favoriteCollections.has(b.slug) ? 0 : 1;
-      if (aFav !== bFav) return aFav - bFav;
-      return TEXT.compare(a.name, b.name);
-    });
-    for (const collection of ordered) {
-      base.push(`collection:${collection.slug}`);
-    }
-    for (const sourceFilter of sourceFilters) {
-      base.push(`source:${sourceFilter}`);
-    }
+    for (const stock of STOCK_COLLECTIONS) base.push(stock.id);
+    for (const collection of collections) base.push(`collection:${collection.slug}`);
+    for (const sourceFilter of sourceFilters) base.push(`source:${sourceFilter}`);
     return base;
-  }, [sourceFilters, collections, favoriteCollections]);
+  }, [sourceFilters, collections]);
 
-  // Open on the favorited collection once, if it still exists on the server.
+  // Open on the favorited collection once, if it is still available.
   useEffect(() => {
     if (appliedFavoriteRef.current || collections.length === 0) return;
     appliedFavoriteRef.current = true;
-    const favorite = collections.find((c) => favoriteCollections.has(c.slug));
-    if (favorite) setFilterMode(`collection:${favorite.slug}`);
-  }, [collections, favoriteCollections]);
+    const favorite = availableFilters.find((f) => favoriteCollections.has(f));
+    if (favorite) setFilterMode(favorite);
+  }, [collections, favoriteCollections, availableFilters]);
 
   useEffect(() => {
     appliedFavoriteRef.current = false;
@@ -724,9 +749,17 @@ export default function Live() {
       list = members
         ? list.filter((row) => collectionMemberKeys(row.channel).some((key) => members.has(key)))
         : [];
+    } else if (filterMode.startsWith('stock:')) {
+      const stock = STOCK_COLLECTIONS.find((s) => s.id === filterMode);
+      list = stock ? list.filter((row) => stock.match(row.channel)) : [];
     }
 
-    if (filterMode === 'all' || filterMode === 'favorites' || filterMode.startsWith('collection:')) {
+    if (
+      filterMode === 'all'
+      || filterMode === 'favorites'
+      || filterMode.startsWith('collection:')
+      || filterMode.startsWith('stock:')
+    ) {
       list = dedupeRows(list);
     }
 
@@ -800,57 +833,92 @@ export default function Live() {
   }, [visibleRows.length]);
 
   const guideEnd = guideStart + GUIDE_WINDOW_SECONDS;
+  // The collection menu covers both built-in and DVR-defined collections, so it
+  // holds the whole filter value rather than a bare slug.
+  const selectedCollectionSlug = filterMode.startsWith('collection:') || filterMode.startsWith('stock:')
+    ? filterMode
+    : '';
 
   return (
     <div className="page">
       <header className="page__header">
         <h1 className="page__title" style={{ whiteSpace: 'nowrap', alignSelf: 'flex-start' }}>Live TV</h1>
         <div className="page__filters page__filters--wrap">
-          {availableFilters.map((filter) => {
-            const label = channelFilterLabel(filter, collectionNames);
-            const isActive = filterMode === filter;
+          {/* All / Favorites stay as chips; collections and sources each get
+              their own dropdown so they are not jumbled into one long row.
+              Only one filter is ever in effect, so choosing from either menu
+              overrides the other — picking a source clears the collection. */}
+          <button
+            type="button"
+            className={`filter-btn ${filterMode === 'all' ? 'filter-btn--active' : ''}`}
+            onClick={() => setFilterMode('all')}
+          >
+            All Channels
+          </button>
+          <button
+            type="button"
+            className={`filter-btn ${filterMode === 'favorites' ? 'filter-btn--active' : ''}`}
+            onClick={() => setFilterMode('favorites')}
+          >
+            Favorites
+          </button>
 
-            if (!filter.startsWith('collection:')) {
-              return (
-                <button
-                  key={filter}
-                  type="button"
-                  className={`filter-btn ${isActive ? 'filter-btn--active' : ''}`}
-                  onClick={() => setFilterMode(filter)}
-                >
-                  {label}
-                </button>
-              );
-            }
+          <span className="filter-select-group">
+              <select
+                className="page-sort-select"
+                aria-label="Filter by channel collection"
+                value={selectedCollectionSlug}
+                onChange={(e) => setFilterMode((e.target.value || 'all') as FilterMode)}
+              >
+                <option value="">Collection: All</option>
+                <optgroup label="Built-in">
+                  {STOCK_COLLECTIONS.map((stock) => (
+                    <option key={stock.id} value={stock.id}>
+                      {favoriteCollections.has(stock.id) ? '★ ' : ''}
+                      {stock.name} ({collectionCounts.get(stock.id) ?? 0})
+                    </option>
+                  ))}
+                </optgroup>
+                {collections.length > 0 && (
+                  <optgroup label="From your DVR">
+                    {collections.map((collection) => (
+                      <option key={collection.slug} value={`collection:${collection.slug}`}>
+                        {favoriteCollections.has(`collection:${collection.slug}`) ? '★ ' : ''}
+                        {collection.name} ({collectionCounts.get(`collection:${collection.slug}`) ?? 0})
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+              <button
+                type="button"
+                className={`filter-star ${selectedCollectionSlug && favoriteCollections.has(selectedCollectionSlug) ? 'filter-star--on' : ''}`}
+                disabled={!selectedCollectionSlug}
+                onClick={() => { if (selectedCollectionSlug) toggleFavoriteCollection(selectedCollectionSlug); }}
+                aria-pressed={Boolean(selectedCollectionSlug && favoriteCollections.has(selectedCollectionSlug))}
+                title={!selectedCollectionSlug
+                  ? 'Choose a collection to favorite it'
+                  : favoriteCollections.has(selectedCollectionSlug)
+                    ? 'Unfavorite this collection — Live will no longer open on it'
+                    : 'Favorite this collection — Live will open on it'}
+              >
+                {selectedCollectionSlug && favoriteCollections.has(selectedCollectionSlug) ? '★' : '☆'}
+              </button>
+          </span>
 
-            // Collections get a star. The star is a sibling button rather than
-            // nested inside the filter button — a button inside a button is
-            // invalid and swallows the click.
-            const slug = filter.replace('collection:', '');
-            const isFavorite = favoriteCollections.has(slug);
-            return (
-              <span key={filter} className={`filter-chip ${isActive ? 'filter-chip--active' : ''}`}>
-                <button
-                  type="button"
-                  className={`filter-btn filter-btn--chip ${isActive ? 'filter-btn--active' : ''}`}
-                  onClick={() => setFilterMode(filter)}
-                >
-                  {label}
-                </button>
-                <button
-                  type="button"
-                  className={`filter-star ${isFavorite ? 'filter-star--on' : ''}`}
-                  onClick={() => toggleFavoriteCollection(slug)}
-                  aria-pressed={isFavorite}
-                  title={isFavorite
-                    ? `Unfavorite ${label} — it will no longer open by default`
-                    : `Favorite ${label} — pin it first and open Live on it`}
-                >
-                  {isFavorite ? '★' : '☆'}
-                </button>
-              </span>
-            );
-          })}
+          {sourceFilters.length > 0 && (
+            <select
+              className="page-sort-select"
+              aria-label="Filter by source"
+              value={filterMode.startsWith('source:') ? filterMode : ''}
+              onChange={(e) => setFilterMode((e.target.value || 'all') as FilterMode)}
+            >
+              <option value="">Source: All</option>
+              {sourceFilters.map((source) => (
+                <option key={source} value={`source:${source}`}>{source}</option>
+              ))}
+            </select>
+          )}
           <select
             className="page-sort-select"
             value={sortMode}
