@@ -62,7 +62,7 @@ async function fetchLatestRelease(): Promise<UpdateInfo | null> {
 }
 
 function App() {
-  const { activeServerId, serverChangeVersion, probeActiveServer, apiVersionApproved, theme, windowAlwaysOnTop } = useStore();
+  const { activeServerId, serverChangeVersion, probeActiveServer, apiVersionApproved, apiWarningDismissed, dismissApiVersionWarning, theme, windowAlwaysOnTop } = useStore();
   useKeyboardNav();
   const [probing, setProbing] = useState(true);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
@@ -136,10 +136,17 @@ function App() {
               </a>
             </div>
           )}
-          {!probing && !apiVersionApproved && (
+          {!probing && !apiVersionApproved && !apiWarningDismissed && (
             <div className="api-version-banner" role="alert">
               <span>⚠ Server/API version changed and is not yet approved in the repository compatibility list. Continue with caution.</span>
               <Link to="/settings" className="api-version-banner__link">Review in Settings</Link>
+              <button
+                type="button"
+                className="api-version-banner__dismiss"
+                onClick={dismissApiVersionWarning}
+              >
+                Dismiss
+              </button>
             </div>
           )}
           {probing ? (

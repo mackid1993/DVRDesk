@@ -89,3 +89,24 @@
   color: var(--wc-banner-api-link-hover);
 }
 
+
+/* Dismiss control for the unapproved-version banner. Running a Channels DVR
+   beta is the norm, so this warning is otherwise permanent. */
+.api-version-banner__dismiss {
+  margin-left: auto;
+  padding: 3px 12px;
+  border: 1px solid var(--wc-banner-api-link);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--wc-banner-api-link);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.api-version-banner__dismiss:hover {
+  background: var(--wc-banner-api-link);
+  color: var(--wc-bg);
+}

@@ -14,6 +14,7 @@ const SHARE_KEY = 'dvr_storage_share';
 const SERVERS_KEY = 'dvr_servers';
 const ACTIVE_SERVER_KEY = 'dvr_active_server_id';
 const PLAYBACK_REMUX_KEY = 'playback_prefer_remux';
+const API_WARNING_SUPPRESSED_KEY = 'api_version_warning_dismissed';
 const DIAGNOSTICS_ENABLED_KEY = 'diagnostics_enabled';
 const LIVE_SHOW_HIDDEN_KEY = 'live_show_hidden_channels';
 const KEYBINDINGS_KEY = 'player_keybindings';
@@ -142,6 +143,14 @@ export interface AppState {
   apiVersionApproved: boolean;
   /** Additional compatibility status context for UI. */
   apiCompatibilityNote: string | null;
+  /**
+   * True once the user dismisses the unapproved-version banner. Practically
+   * everyone tracks the Channels DVR beta, so an unapproved version is the
+   * normal case and the banner is permanent noise. Stays dismissed; the same
+   * status is still available on the Settings page.
+   */
+  apiWarningDismissed: boolean;
+  dismissApiVersionWarning: () => void;
 
   // UNC / local path to the root of the DVR storage share, e.g.
   // e.g. \\192.168.x.x\AllMedia\Channels  — used to find SRT sidecar files.
@@ -225,6 +234,12 @@ export const useStore = create<AppState>((set) => ({
   apiPublicVersion: null,
   apiVersionApproved: true,
   apiCompatibilityNote: null,
+  apiWarningDismissed: localStorage.getItem(API_WARNING_SUPPRESSED_KEY) === 'true',
+
+  dismissApiVersionWarning: () => {
+    localStorage.setItem(API_WARNING_SUPPRESSED_KEY, 'true');
+    set({ apiWarningDismissed: true });
+  },
 
   setActiveServer: (id: string) => {
     set((state) => {
