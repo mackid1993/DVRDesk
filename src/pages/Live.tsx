@@ -29,7 +29,8 @@ import './Page.css';
 
 type SortMode = 'alpha' | 'number';
 type DiagnosticsSortMode = 'number' | 'name';
-type FilterMode = 'all' | 'favorites' | `source:${string}` | `collection:${string}` | `stock:${string}`;
+type CollectionFilter = '' | `collection:${string}` | `stock:${string}`;
+type SourceFilter = '' | `source:${string}`;
 
 /**
  * Channels DVR exposes no built-in collections over the API — only the ones a
@@ -149,15 +150,27 @@ function channelCollectionName(channel: Channel): string {
   ).trim();
 }
 
-function channelFilterLabel(filter: FilterMode, collectionNames?: Map<string, string>): string {
-  if (filter === 'all') return 'All Channels';
-  if (filter === 'favorites') return 'Favorites';
-  if (filter.startsWith('source:')) return filter.replace('source:', '');
+function collectionFilterLabel(filter: CollectionFilter, collectionNames?: Map<string, string>): string {
+  if (!filter) return '';
   if (filter.startsWith('stock:')) {
     return STOCK_COLLECTIONS.find((s) => s.id === filter)?.name ?? filter.replace('stock:', '');
   }
   const slug = filter.replace('collection:', '');
   return collectionNames?.get(slug) ?? slug;
+}
+
+/** Human summary of every filter currently in effect, for the count line. */
+function activeFilterLabel(
+  favoritesOnly: boolean,
+  collectionFilter: CollectionFilter,
+  sourceFilter: SourceFilter,
+  collectionNames?: Map<string, string>
+): string {
+  const parts: string[] = [];
+  if (favoritesOnly) parts.push('Favorites');
+  if (collectionFilter) parts.push(collectionFilterLabel(collectionFilter, collectionNames));
+  if (sourceFilter) parts.push(sourceFilter.replace('source:', ''));
+  return parts.length > 0 ? parts.join(' + ') : 'All Channels';
 }
 
 /** Collection membership is stored as channel numbers, which also match ids. */
@@ -410,7 +423,14 @@ export default function Live() {
   const [openProgram, setOpenProgram] = useState<{ row: ChannelRow; airing: Airing } | null>(null);
   const [scheduleBusy, setScheduleBusy] = useState<string | null>(null);
   const [scheduleError, setScheduleError] = useState<string | null>(null);
-  const [filterMode, setFilterMode] = useState<FilterMode>('all');
+  // Collection, source and favorites are independent dimensions and compose
+  // rather than replace each other. Making one override the others meant that
+  // picking a source discarded the collection, so e.g. the DirecTV collection
+  // plus the HDHomeRun source listed every HDHomeRun channel instead of the
+  // empty set those two actually have in common.
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [collectionFilter, setCollectionFilter] = useState<CollectionFilter>('');
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('');
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
   const [playPendingRowId, setPlayPendingRowId] = useState<string | null>(null);
@@ -709,57 +729,59 @@ export default function Live() {
   }, [rows, collections, collectionMembers]);
 
   const availableFilters = useMemo(() => {
-    const base: FilterMode[] = ['all', 'favorites'];
+    const base: CollectionFilter[] = [];
     for (const stock of STOCK_COLLECTIONS) base.push(stock.id);
     for (const collection of collections) base.push(`collection:${collection.slug}`);
-    for (const sourceFilter of sourceFilters) base.push(`source:${sourceFilter}`);
     return base;
-  }, [sourceFilters, collections]);
+  }, [collections]);
 
   // Open on the favorited collection once, if it is still available.
   useEffect(() => {
     if (appliedFavoriteRef.current || collections.length === 0) return;
     appliedFavoriteRef.current = true;
     const favorite = availableFilters.find((f) => favoriteCollections.has(f));
-    if (favorite) setFilterMode(favorite);
+    if (favorite) setCollectionFilter(favorite);
   }, [collections, favoriteCollections, availableFilters]);
 
   useEffect(() => {
     appliedFavoriteRef.current = false;
   }, [cacheKey, serverChangeVersion]);
 
+  // Drop a selection whose underlying collection or source has gone away.
   useEffect(() => {
-    if (!availableFilters.includes(filterMode)) {
-      setFilterMode('all');
-    }
-  }, [availableFilters, filterMode]);
+    if (collectionFilter && !availableFilters.includes(collectionFilter)) setCollectionFilter('');
+  }, [availableFilters, collectionFilter]);
+
+  useEffect(() => {
+    if (sourceFilter && !sourceFilters.includes(sourceFilter.replace('source:', ''))) setSourceFilter('');
+  }, [sourceFilters, sourceFilter]);
 
   const visibleRows = useMemo(() => {
     let list = rows;
 
-    if (filterMode === 'favorites') {
-      list = list.filter((row) => {
-        return isFavoriteChannel(row.channel, guideFavorites);
-      });
-    } else if (filterMode.startsWith('source:')) {
-      const wanted = filterMode.replace('source:', '');
-      list = list.filter((row) => row.sourceFilterLabel === wanted);
-    } else if (filterMode.startsWith('collection:')) {
-      const members = collectionMembers.get(filterMode.replace('collection:', ''));
+    // Each active filter narrows the previous one, so a collection and a source
+    // that share no channels correctly produce an empty guide.
+    if (favoritesOnly) {
+      list = list.filter((row) => isFavoriteChannel(row.channel, guideFavorites));
+    }
+
+    if (collectionFilter.startsWith('collection:')) {
+      const members = collectionMembers.get(collectionFilter.replace('collection:', ''));
       list = members
         ? list.filter((row) => collectionMemberKeys(row.channel).some((key) => members.has(key)))
         : [];
-    } else if (filterMode.startsWith('stock:')) {
-      const stock = STOCK_COLLECTIONS.find((s) => s.id === filterMode);
+    } else if (collectionFilter.startsWith('stock:')) {
+      const stock = STOCK_COLLECTIONS.find((s) => s.id === collectionFilter);
       list = stock ? list.filter((row) => stock.match(row.channel)) : [];
     }
 
-    if (
-      filterMode === 'all'
-      || filterMode === 'favorites'
-      || filterMode.startsWith('collection:')
-      || filterMode.startsWith('stock:')
-    ) {
+    if (sourceFilter) {
+      const wanted = sourceFilter.replace('source:', '');
+      list = list.filter((row) => row.sourceFilterLabel === wanted);
+    } else {
+      // Without a specific source, the same channel can appear once per source;
+      // collapse those. Picking a source is an explicit request to see its own
+      // rows, so leave them alone in that case.
       list = dedupeRows(list);
     }
 
@@ -774,11 +796,11 @@ export default function Live() {
       });
     }
     return sorted;
-  }, [rows, filterMode, sortMode, guideFavorites, collectionMembers]);
+  }, [rows, favoritesOnly, collectionFilter, sourceFilter, sortMode, guideFavorites, collectionMembers]);
 
   useEffect(() => {
     setVisibleChannelCount(INITIAL_VISIBLE_CHANNEL_ROWS);
-  }, [filterMode, sortMode, visibleRows.length]);
+  }, [favoritesOnly, collectionFilter, sourceFilter, sortMode, visibleRows.length]);
 
   useEffect(() => {
     if (!selectedChannelId) return;
@@ -835,9 +857,7 @@ export default function Live() {
   const guideEnd = guideStart + GUIDE_WINDOW_SECONDS;
   // The collection menu covers both built-in and DVR-defined collections, so it
   // holds the whole filter value rather than a bare slug.
-  const selectedCollectionSlug = filterMode.startsWith('collection:') || filterMode.startsWith('stock:')
-    ? filterMode
-    : '';
+  const selectedCollectionSlug = collectionFilter;
 
   return (
     <div className="page">
@@ -846,19 +866,20 @@ export default function Live() {
         <div className="page__filters page__filters--wrap">
           {/* All / Favorites stay as chips; collections and sources each get
               their own dropdown so they are not jumbled into one long row.
-              Only one filter is ever in effect, so choosing from either menu
-              overrides the other — picking a source clears the collection. */}
+              They compose rather than replace each other, so a collection and a
+              source with no channels in common correctly yield nothing. */}
           <button
             type="button"
-            className={`filter-btn ${filterMode === 'all' ? 'filter-btn--active' : ''}`}
-            onClick={() => setFilterMode('all')}
+            className={`filter-btn ${!favoritesOnly && !collectionFilter && !sourceFilter ? 'filter-btn--active' : ''}`}
+            onClick={() => { setFavoritesOnly(false); setCollectionFilter(''); setSourceFilter(''); }}
           >
             All Channels
           </button>
           <button
             type="button"
-            className={`filter-btn ${filterMode === 'favorites' ? 'filter-btn--active' : ''}`}
-            onClick={() => setFilterMode('favorites')}
+            className={`filter-btn ${favoritesOnly ? 'filter-btn--active' : ''}`}
+            onClick={() => setFavoritesOnly((v) => !v)}
+            aria-pressed={favoritesOnly}
           >
             Favorites
           </button>
@@ -868,7 +889,7 @@ export default function Live() {
                 className="page-sort-select"
                 aria-label="Filter by channel collection"
                 value={selectedCollectionSlug}
-                onChange={(e) => setFilterMode((e.target.value || 'all') as FilterMode)}
+                onChange={(e) => setCollectionFilter(e.target.value as CollectionFilter)}
               >
                 <option value="">Collection: All</option>
                 <optgroup label="Built-in">
@@ -910,8 +931,8 @@ export default function Live() {
             <select
               className="page-sort-select"
               aria-label="Filter by source"
-              value={filterMode.startsWith('source:') ? filterMode : ''}
-              onChange={(e) => setFilterMode((e.target.value || 'all') as FilterMode)}
+              value={sourceFilter}
+              onChange={(e) => setSourceFilter(e.target.value as SourceFilter)}
             >
               <option value="">Source: All</option>
               {sourceFilters.map((source) => (
@@ -941,7 +962,7 @@ export default function Live() {
         </div>
       </header>
       <p className="page__status live-count">
-        {visibleRows.length} channel{visibleRows.length === 1 ? '' : 's'} • {channelFilterLabel(filterMode, collectionNames)}
+        {visibleRows.length} channel{visibleRows.length === 1 ? '' : 's'} • {activeFilterLabel(favoritesOnly, collectionFilter, sourceFilter, collectionNames)}
         <span className="guide-nav">
           <button
             type="button"
