@@ -501,3 +501,83 @@
   background: #fff;
   border: none;
 }
+
+/* ── Live edge button ─────────────────────────────────────────────────────
+   Red means you are at the live edge. Green means you have rewound and are
+   behind it, and clicking jumps back to live. */
+
+.video-live-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 6px;
+  height: 32px;
+  padding: 0 11px;
+  border: none;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.12s;
+  font-variant-numeric: tabular-nums;
+}
+
+.video-live-btn--live {
+  background: var(--wc-error);
+  cursor: default;
+}
+
+.video-live-btn--behind {
+  background: var(--wc-ok);
+}
+
+.video-live-btn--behind:hover {
+  background: #3d9440;
+}
+
+/* ── Tuning indicator ─────────────────────────────────────────────────────
+   Shown while a live channel waits on the DVR. Informational only: it does
+   not gate or alter playback. */
+
+.video-tuning {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.video-tuning__spinner {
+  width: 34px;
+  height: 34px;
+  border: 3px solid rgba(255, 255, 255, 0.18);
+  border-top-color: #60b0f0;
+  border-radius: 50%;
+  animation: video-tuning-spin 0.9s linear infinite;
+}
+
+@keyframes video-tuning-spin {
+  to { transform: rotate(360deg); }
+}
+
+.video-tuning__text {
+  font-size: 15px;
+  font-weight: 600;
+  color: #e8e8e8;
+}
+
+.video-tuning__hint {
+  font-size: 12px;
+  color: #9aa6b2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .video-tuning__spinner { animation-duration: 3s; }
+}

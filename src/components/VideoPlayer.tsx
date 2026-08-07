@@ -250,6 +250,21 @@ export default function VideoPlayer() {
   // Native controls are gone, so volume has to be surfaced by the custom bar.
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
+  // Live seek window and distance behind the edge. Live streams here are
+  // seekable back to the start of the tuned session, so they get a real scrub
+  // bar and a LIVE button that jumps back to the edge.
+  const [seekStart, setSeekStart] = useState(0);
+  const [seekEnd, setSeekEnd] = useState(0);
+  const [behindLive, setBehindLive] = useState(0);
+  /**
+   * True once the viewer deliberately rewinds a live channel. The live latency
+   * cap exists to pull playback back to the edge after a stall, but hls.js
+   * cannot tell a stall from an intentional rewind and would drag the viewer
+   * forward again mid-timeshift. While this is set the cap is lifted, and the
+   * LIVE button restores it.
+   */
+  const userTimeShiftedRef = useRef(false);
+  const [awaitingFirstFrame, setAwaitingFirstFrame] = useState(false);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const captionModeRef = useRef<CaptionMode>('off');
   const hasAppliedResumeRef = useRef(false);
@@ -547,6 +562,7 @@ export default function VideoPlayer() {
     const isLive = !nowPlayingRecordingKind;
     const remuxSrc = withQuery(src, 'encoder', 'remux');
     activeManifestUrlRef.current = (preferRemux && !isLive) ? remuxSrc : src;
+    setAwaitingFirstFrame(isLive);
 
     if (Hls.isSupported()) {
       let cancelled = false;
@@ -1065,6 +1081,17 @@ export default function VideoPlayer() {
       setCurrentTime(t);
       queuePlaybackUpdate(t);
 
+      // A live Channels stream is seekable back to the start of the session, so
+      // track the window and how far behind the edge we are. That drives both
+      // the live scrub bar and whether the LIVE button is lit.
+      if (video.seekable.length > 0) {
+        const start = video.seekable.start(0);
+        const end = video.seekable.end(video.seekable.length - 1);
+        setSeekStart(start);
+        setSeekEnd(end);
+        setBehindLive(Math.max(0, end - t));
+      }
+
       if (
         !hasMarkedWatchedRef.current &&
         Number.isFinite(video.duration) &&
@@ -1245,6 +1272,11 @@ export default function VideoPlayer() {
   if (!nowPlayingId) return null;
 
   const isLiveNow = !nowPlayingRecordingKind;
+  // Within ~10s of the edge counts as live: the sync target already sits a
+  // couple of segments back, so requiring an exact match would never light up.
+  const atLiveEdge = behindLive <= 10;
+  const scrubMin = isLiveNow ? seekStart : 0;
+  const scrubMax = isLiveNow ? seekEnd : duration;
 
   return (
     <div
@@ -1294,6 +1326,17 @@ export default function VideoPlayer() {
           clicked, which is not what a click on a TV picture should do. Cover
           everything above the control bar so a click reveals the controls
           instead of pausing; the bar itself stays directly clickable. */}
+      {/* A live tune waits on the DVR to tune its input and start an encoder,
+          commonly ~8s on an ah4c/M3U source, during which the element just sits
+          there. Now that the native controls (and their spinner) are gone,
+          nothing else indicates that anything is happening. */}
+      {awaitingFirstFrame && !error ? (
+        <div className="video-tuning" role="status" aria-live="polite">
+          <span className="video-tuning__spinner" aria-hidden="true" />
+          <span className="video-tuning__text">Tuning channel…</span>
+          <span className="video-tuning__hint">Waiting for the DVR to start this source</span>
+        </div>
+      ) : null}
       <video
         ref={videoRef}
         className="video-element"
@@ -1301,6 +1344,21 @@ export default function VideoPlayer() {
         onEnded={stopPlayback}
         onPlay={() => setIsPaused(false)}
         onPause={() => setIsPaused(true)}
+        onLoadedData={() => setAwaitingFirstFrame(false)}
+        onPlaying={() => setAwaitingFirstFrame(false)}
+        onSeeking={(e) => {
+          if (!isLiveNow || isAutoSeekRef.current) return;
+          const v = e.currentTarget;
+          if (v.seekable.length === 0) return;
+          const behind = v.seekable.end(v.seekable.length - 1) - v.currentTime;
+          // Only a meaningful rewind counts; small nudges are hls.js keeping
+          // itself in sync, not the viewer time-shifting.
+          if (behind > 12) {
+            userTimeShiftedRef.current = true;
+            const hls = hlsRef.current;
+            if (hls) hls.config.liveMaxLatencyDurationCount = Infinity;
+          }
+        }}
         onVolumeChange={(e) => {
           setVolume(e.currentTarget.volume);
           setMuted(e.currentTarget.muted);
@@ -1311,31 +1369,36 @@ export default function VideoPlayer() {
 
       {!error && (
         <div className="video-controls" onMouseMove={resetHideTimer}>
-          {/* Live has no meaningful scrub range; recordings get a seek bar
-              with the commercial blocks marked behind it. */}
-          {!isLiveNow && duration > 0 && (
+          {/* Live is seekable back to the start of the session, so it gets a
+              scrub bar too — otherwise there is no way to see where a rewind or
+              fast-forward is landing. Recordings span 0..duration, live spans
+              the seekable window. */}
+          {scrubMax > scrubMin && (
             <div className="video-scrub">
-              {adBlocks.map(([start, end], i) => (
+              {!isLiveNow && adBlocks.map(([start, end], i) => (
                 <div
                   key={i}
                   className={`video-scrub__ad ${disabledBlocks.has(i) ? 'video-scrub__ad--disabled' : ''}`}
                   style={{
-                    left: `${(start / duration) * 100}%`,
-                    width: `${Math.max(0.4, ((end - start) / duration) * 100)}%`,
+                    left: `${((start - scrubMin) / (scrubMax - scrubMin)) * 100}%`,
+                    width: `${Math.max(0.4, ((end - start) / (scrubMax - scrubMin)) * 100)}%`,
                   }}
                   title={disabledBlocks.has(i)
                     ? `Commercial block ${i + 1} — auto-skip disabled (seeked manually)`
                     : `Commercial block ${i + 1}`}
                 />
               ))}
-              <div className="video-scrub__fill" style={{ width: `${(currentTime / duration) * 100}%` }} />
+              <div
+                className="video-scrub__fill"
+                style={{ width: `${Math.max(0, Math.min(100, ((currentTime - scrubMin) / (scrubMax - scrubMin)) * 100))}%` }}
+              />
               <input
                 className="video-scrub__input"
                 type="range"
-                min={0}
-                max={duration}
+                min={scrubMin}
+                max={scrubMax}
                 step={0.1}
-                value={Math.min(currentTime, duration)}
+                value={Math.min(Math.max(currentTime, scrubMin), scrubMax)}
                 aria-label="Seek"
                 onChange={(e) => {
                   const v = videoRef.current;
@@ -1371,11 +1434,34 @@ export default function VideoPlayer() {
               <span className="video-ctl__num">{skipIntervals?.skipForward ?? DEFAULT_SKIP_INTERVALS.skipForward}</span>
             </button>
 
-            <span className="video-time">
-              {isLiveNow
-                ? <span className="video-live-badge">● LIVE</span>
-                : `${formatClock(currentTime)} / ${formatClock(duration)}`}
-            </span>
+            {isLiveNow ? (
+              <button
+                type="button"
+                className={`video-live-btn ${atLiveEdge ? 'video-live-btn--live' : 'video-live-btn--behind'}`}
+                onClick={() => {
+                  const v = videoRef.current;
+                  if (!v) return;
+                  // Returning to live also re-arms the latency cap that the
+                  // rewind lifted, so stall drift is corrected again.
+                  userTimeShiftedRef.current = false;
+                  const hls = hlsRef.current;
+                  if (hls) hls.config.liveMaxLatencyDurationCount = 6;
+                  isAutoSeekRef.current = true;
+                  // Back off a hair so the seek lands inside the buffered range
+                  // rather than past the end of it.
+                  if (v.seekable.length > 0) v.currentTime = Math.max(0, v.seekable.end(v.seekable.length - 1) - 0.5);
+                  window.setTimeout(() => { isAutoSeekRef.current = false; }, 300);
+                  if (v.paused) void v.play().catch(() => {});
+                }}
+                title={atLiveEdge ? 'Playing live' : `Behind live by ${formatClock(behindLive)} — click to jump to live`}
+              >
+                ● LIVE{!atLiveEdge && behindLive >= 1 ? ` -${formatClock(behindLive)}` : ''}
+              </button>
+            ) : (
+              <span className="video-time">
+                {formatClock(currentTime)} / {formatClock(duration)}
+              </span>
+            )}
 
             <span className="video-controls__spacer" />
 
